@@ -6,5 +6,7 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.e2e-spec.ts'],
+    setupFiles: ['./test/auth-test-database.setup.ts'],
+    testTimeout: 30_000,
   },
 });
