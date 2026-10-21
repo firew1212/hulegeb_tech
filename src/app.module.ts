@@ -11,6 +11,7 @@ import { RolesGuard } from './authorization/roles.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AuthenticationGuard } from './auth/authentication.guard.js';
 import { SellersModule } from './sellers/sellers.module.js';
+import { CatalogModule } from './catalog/catalog.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -29,6 +30,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     AuthModule,
     AuthorizationModule,
     SellersModule,
+    CatalogModule,
   ],
   controllers: [AppController],
   providers: [
