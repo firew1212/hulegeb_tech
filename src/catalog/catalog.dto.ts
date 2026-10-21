@@ -299,4 +299,56 @@ export class PublicProductPaginationDto {
   @Min(1)
   @Max(100)
   limit = 20;
+
+  @Transform(({ value }) =>
+    typeof value === 'string'
+      ? value.trim().replace(/\s+/g, ' ') || undefined
+      : value,
+  )
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  q?: string;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID()
+  categoryId?: string;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID()
+  subcategoryId?: string;
+
+  @Transform(({ value }) =>
+    value === undefined
+      ? undefined
+      : typeof value === 'string'
+        ? Number(value)
+        : value,
+  )
+  @ValidateIf((_, value) => value !== undefined)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(9999999999.99)
+  minPrice?: number;
+
+  @Transform(({ value }) =>
+    value === undefined
+      ? undefined
+      : typeof value === 'string'
+        ? Number(value)
+        : value,
+  )
+  @ValidateIf((_, value) => value !== undefined)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(9999999999.99)
+  maxPrice?: number;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn(['NEW', 'USED', 'REFURBISHED'])
+  condition?: ProductCondition;
+
+  @Transform(({ value }) => (value === undefined ? 'newest' : value))
+  @IsIn(['newest', 'oldest', 'price_asc', 'price_desc'])
+  sort: 'newest' | 'oldest' | 'price_asc' | 'price_desc' = 'newest';
 }

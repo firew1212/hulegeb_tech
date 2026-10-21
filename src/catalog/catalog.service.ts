@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import type { RequestUser } from '../authorization/authorization.constants.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import type { ProductStatus } from '../../generated/prisma/client.js';
+import { Prisma, type ProductStatus } from '../../generated/prisma/client.js';
 import {
   CreateCategoryDto,
   CreateProductDto,
@@ -126,18 +126,197 @@ export class CatalogService {
   }
 
   async listPublicProducts(pagination: PublicProductPaginationDto) {
-    const { page, limit } = pagination;
-    const where = publicProductWhere;
-    const [products, total] = await this.prisma.$transaction([
-      this.prisma.product.findMany({
-        where,
-        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-        select: publicProductSelect,
-      }),
-      this.prisma.product.count({ where }),
-    ]);
+    const {
+      page,
+      limit,
+      q,
+      categoryId,
+      subcategoryId,
+      minPrice,
+      maxPrice,
+      condition,
+      sort,
+    } = pagination;
+    if (
+      minPrice !== undefined &&
+      maxPrice !== undefined &&
+      minPrice > maxPrice
+    ) {
+      throw new BadRequestException('minPrice must not exceed maxPrice.');
+    }
+
+    const searchTerm = q?.trim().replace(/\s+/g, ' ').toLowerCase();
+    const variantWhere = {
+      isActive: true,
+      stockQuantity: { gt: 0 },
+      ...(minPrice !== undefined || maxPrice !== undefined
+        ? {
+            price: {
+              ...(minPrice !== undefined ? { gte: minPrice } : {}),
+              ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+            },
+          }
+        : {}),
+    };
+    const categoryWhere = {
+      isActive: true,
+      ...(subcategoryId
+        ? {
+            id: subcategoryId,
+            ...(categoryId ? { parentId: categoryId } : {}),
+          }
+        : categoryId
+          ? { OR: [{ id: categoryId }, { parentId: categoryId }] }
+          : {}),
+    };
+    const where: Prisma.ProductWhereInput = {
+      ...publicProductWhere,
+      ...(searchTerm
+        ? {
+            OR: [
+              { titleEn: { contains: searchTerm, mode: 'insensitive' } },
+              { titleAm: { contains: searchTerm, mode: 'insensitive' } },
+              { descriptionEn: { contains: searchTerm, mode: 'insensitive' } },
+              { descriptionAm: { contains: searchTerm, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...(categoryId || subcategoryId ? { category: categoryWhere } : {}),
+      ...(condition ? { condition } : {}),
+      variants: { some: variantWhere },
+    };
+
+    let products: Prisma.ProductGetPayload<{
+      select: typeof publicProductSelect;
+    }>[];
+    let total: number;
+    if (sort === 'price_asc' || sort === 'price_desc') {
+      const order = Prisma.raw(sort === 'price_asc' ? 'ASC' : 'DESC');
+      const queryConditions: Prisma.Sql[] = [
+        Prisma.sql`p."status" = 'APPROVED'`,
+        Prisma.sql`c."isActive" = TRUE`,
+        Prisma.sql`s."status" = 'APPROVED'`,
+        Prisma.sql`u."status" = 'ACTIVE'`,
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM "ProductVariant" available
+          WHERE available."productId" = p."id"
+            AND available."isActive" = TRUE
+            AND available."stockQuantity" > 0
+        )`,
+      ];
+      const priceConditions: Prisma.Sql[] = [
+        Prisma.sql`v."isActive" = TRUE`,
+        Prisma.sql`v."stockQuantity" > 0`,
+      ];
+      if (searchTerm) {
+        queryConditions.push(Prisma.sql`(
+          POSITION(LOWER(${searchTerm}) IN LOWER(p."titleEn")) > 0
+          OR POSITION(LOWER(${searchTerm}) IN LOWER(p."titleAm")) > 0
+          OR POSITION(LOWER(${searchTerm}) IN LOWER(COALESCE(p."descriptionEn", ''))) > 0
+          OR POSITION(LOWER(${searchTerm}) IN LOWER(COALESCE(p."descriptionAm", ''))) > 0
+        )`);
+      }
+      if (categoryId && subcategoryId) {
+        queryConditions.push(
+          Prisma.sql`c."parentId" = ${categoryId}::uuid AND c."id" = ${subcategoryId}::uuid`,
+        );
+      } else if (subcategoryId) {
+        queryConditions.push(Prisma.sql`c."id" = ${subcategoryId}::uuid`);
+      } else if (categoryId) {
+        queryConditions.push(
+          Prisma.sql`(c."id" = ${categoryId}::uuid OR c."parentId" = ${categoryId}::uuid)`,
+        );
+      }
+      if (condition) {
+        queryConditions.push(
+          Prisma.sql`p."condition" = ${condition}::"ProductCondition"`,
+        );
+      }
+      if (minPrice !== undefined) {
+        priceConditions.push(Prisma.sql`v."price" >= ${minPrice}::numeric`);
+      }
+      if (maxPrice !== undefined) {
+        priceConditions.push(Prisma.sql`v."price" <= ${maxPrice}::numeric`);
+      }
+      if (minPrice !== undefined || maxPrice !== undefined) {
+        queryConditions.push(Prisma.sql`EXISTS (
+          SELECT 1 FROM "ProductVariant" v
+          WHERE v."productId" = p."id"
+            AND ${Prisma.join(priceConditions, ' AND ')}
+        )`);
+      }
+      const [priceOrderedIds, count] = await this.prisma.$transaction(
+        async (tx) => {
+          const rows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+            SELECT p."id"
+            FROM "Product" p
+            INNER JOIN "Category" c ON c."id" = p."categoryId"
+            INNER JOIN "SellerProfile" s ON s."id" = p."sellerId"
+            INNER JOIN "User" u ON u."id" = s."userId"
+            WHERE ${Prisma.join(queryConditions, ' AND ')}
+            ORDER BY (
+              SELECT MIN(v."price")
+              FROM "ProductVariant" v
+              WHERE v."productId" = p."id"
+                AND ${Prisma.join(priceConditions, ' AND ')}
+            ) ${order}, p."createdAt" DESC, p."id" ASC
+            OFFSET ${(page - 1) * limit}
+            LIMIT ${limit}
+          `);
+          const count = await tx.product.count({ where });
+          const orderedProducts = rows.length
+            ? await tx.product.findMany({
+                where: { ...where, id: { in: rows.map(({ id }) => id) } },
+                select: publicProductSelect,
+              })
+            : [];
+          const productsById = new Map(
+            orderedProducts.map((product) => [product.id, product]),
+          );
+          return [
+            rows.flatMap(({ id }) => {
+              const product = productsById.get(id);
+              return product ? [product] : [];
+            }),
+            count,
+          ] as const;
+        },
+      );
+      products = priceOrderedIds;
+      total = count;
+    } else {
+      const [listedProducts, count] = await this.prisma.$transaction([
+        this.prisma.product.findMany({
+          where,
+          orderBy:
+            sort === 'oldest'
+              ? [{ createdAt: 'asc' }, { id: 'asc' }]
+              : [{ createdAt: 'desc' }, { id: 'asc' }],
+          skip: (page - 1) * limit,
+          take: limit,
+          select: publicProductSelect,
+        }),
+        this.prisma.product.count({ where }),
+      ]);
+      products = listedProducts;
+      total = count;
+    }
+
+    if (searchTerm) {
+      await this.prisma.searchTermAnalytics.upsert({
+        where: { term: searchTerm },
+        create: {
+          term: searchTerm,
+          searchCount: 1,
+          totalResultCount: total,
+        },
+        update: {
+          searchCount: { increment: 1 },
+          totalResultCount: { increment: total },
+        },
+      });
+    }
+
     return {
       data: products,
       page,
