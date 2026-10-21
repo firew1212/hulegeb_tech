@@ -50,6 +50,13 @@ enum ProductStatus {
   REMOVED
 }
 
+enum AuthChallengeType {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  PASSWORD_RESET
+  ADMIN_LOGIN_MFA
+}
+
 // ---------- USERS AND ACCESS ----------
 
 model User {
@@ -62,14 +69,60 @@ model User {
   status          UserStatus @default(PENDING_VERIFICATION)
   emailVerifiedAt DateTime?
   phoneVerifiedAt DateTime?
+  termsAcceptedAt DateTime?
+  termsVersion    String?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
-  userRoles     UserRole[]
-  sellerProfile SellerProfile?
+  userRoles       UserRole[]
+  sellerProfile   SellerProfile?
+  authChallenges  AuthChallenge[]
+  authSessions    AuthSession[]
+  authAuditEvents AuthAuditEvent[]
 
   @@index([status])
   @@index([createdAt])
+}
+
+model AuthChallenge {
+  id         String            @id @default(uuid()) @db.Uuid
+  userId     String            @db.Uuid
+  type       AuthChallengeType
+  tokenHash  String            @unique
+  attempts   Int               @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime          @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type, createdAt])
+  @@index([expiresAt])
+}
+
+model AuthSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model AuthAuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @db.Uuid
+  eventType String
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model Role {

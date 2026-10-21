@@ -23,7 +23,7 @@ describe('AppController (e2e)', () => {
     return request(app.getHttpServer())
       .get('/')
       .expect(200)
-      .expect('Hello World! i am feben wife');
+      .expect('Hello World!');
   });
 
   afterAll(async () => {

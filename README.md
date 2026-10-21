@@ -23,7 +23,86 @@
 
 ## Description
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+NestJS backend for the Hulegeb marketplace.
+
+## Authentication
+
+Copy `.env.example` to `.env` and set `JWT_ACCESS_SECRET` and
+`AUTH_CHALLENGE_SECRET` to independent random values of at least 32 characters.
+`AUTH_OTP_MAX_ATTEMPTS` defaults to five (valid range: 1–5). Passwords are
+limited to 72 UTF-8 bytes to prevent bcrypt from silently truncating them.
+Set `AUTH_EMAIL_MODE=brevo` with `BREVO_API_KEY`, `AUTH_EMAIL_FROM`, and
+`FRONTEND_URL` for email delivery. Set `AUTH_SMS_MODE=webhook` with
+`AUTH_SMS_WEBHOOK_URL` and `AUTH_DELIVERY_WEBHOOK_TOKEN` for SMS delivery.
+The webhook receives authenticated JSON POST requests with `event`,
+`recipient`, `token`, and `expiresInSeconds`; email links also include
+`verificationUrl`. The receiving service must deliver the link/code and must
+not log tokens. Console delivery is permitted only when `NODE_ENV` is explicitly
+`development` or `test`; it prints verification tokens and is not for deployment.
+
+The PostgreSQL e2e suite refuses to start unless `AUTH_TEST_DATABASE_URL` is set
+explicitly to a URL whose database name is `hulegeb_auth_test`. It then replaces
+`DATABASE_URL` for that test process. Do not point this variable at development
+or production databases.
+
+Authentication endpoints:
+
+| Method    | Path                              | Purpose                                                                         |
+| :-------- | :-------------------------------- | :------------------------------------------------------------------------------ |
+| POST      | `/auth/register`                  | Create a pending buyer account and send email/SMS verification                  |
+| POST      | `/auth/login`                     | Authenticate by email or phone; administrator accounts receive an MFA challenge |
+| POST      | `/auth/login/verify-admin-mfa`    | Verify the administrator SMS code and issue a 15-minute token                   |
+| POST      | `/auth/verify-email`              | Consume a time-limited email verification token                                 |
+| POST      | `/auth/verify-phone`              | Verify phone using a five-minute, five-attempt OTP                              |
+| POST      | `/auth/verification/resend`       | Request a replacement phone OTP                                                 |
+| POST      | `/auth/verification/email/resend` | Request a replacement email link                                                |
+| POST      | `/auth/password/forgot`           | Request password recovery without account enumeration                           |
+| POST      | `/auth/password/reset`            | Consume a reset link and revoke existing sessions                               |
+| GET/PATCH | `/auth/me`                        | Read or update the authenticated user's name                                    |
+| POST      | `/auth/logout`                    | Revoke the current authenticated session                                        |
+
+Protected endpoints require `Authorization: Bearer <accessToken>`. Authentication
+sessions are persisted and checked on requests, so logout and password reset
+revoke access immediately. Authorization is applied globally; mark intentionally
+public endpoints with `@Public()` and protected role routes with `@RequireRoles()`.
+Seller-only routes additionally require an approved seller profile.
+
+Seller application review:
+
+| Method | Path | Permission | Purpose |
+| :----- | :--- | :--------- | :------ |
+| POST | `/sellers/applications` | Active buyer | Submit an individual or business seller application |
+| GET | `/sellers/applications/pending` | Active admin | List applications awaiting review |
+| POST | `/sellers/applications/:id/approve` | Active admin | Approve a pending application and assign its owner the seller role |
+| POST | `/sellers/applications/:id/reject` | Active admin | Reject a pending application |
+
+Only pending applications can be approved or rejected. Approved seller access
+continues to require both the seller role and an approved profile.
+
+## Development administrator
+
+From `back-end`, run `pnpm db:seed:admin`. The command requires
+`NODE_ENV=development` and a PostgreSQL URL targeting
+`127.0.0.1:5433/hulegeb_dev`; it also checks the connected database name and
+PostgreSQL server port before asking for input. It prompts for first name, last
+name, email, an Ethiopian phone number, and a password entered twice without
+terminal echo. Do not pass credentials as command-line arguments or environment
+variables.
+
+The new administrator remains `PENDING_VERIFICATION`, with both verification
+timestamps unset. Complete the existing email and phone verification flows
+before login; verified phone MFA remains required for administrator sign-in.
+The command refuses to change an existing account and does not log the entered
+credentials. It does not reset or migrate the database. The existing
+`pnpm db:seed` command continues to provision role records only.
+
+Check the configured database before applying migrations. For the auth e2e
+suite, use `AUTH_TEST_DATABASE_URL` and confirm it targets `hulegeb_auth_test`:
+
+```bash
+pnpm exec prisma migrate deploy
+pnpm exec prisma generate
+```
 
 ## Project setup
 
