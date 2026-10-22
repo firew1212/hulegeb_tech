@@ -3,6 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client.js';
 import { promptForAdminInput } from './admin-input.js';
 import { AdminProvisioningError } from './admin-errors.js';
+import { seedCategories } from './category-seed.js';
 import {
   assertDevelopmentDatabaseTarget,
   provisionDevelopmentAdmin,
@@ -43,7 +44,8 @@ async function main() {
     console.log(`Role ready: ${code}`);
   }
 
-  console.log('Initial roles seeded successfully.');
+  await seedCategories(prisma);
+  console.log('Initial roles and categories seeded successfully.');
 }
 
 main()

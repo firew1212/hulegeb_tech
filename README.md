@@ -69,15 +69,49 @@ Seller-only routes additionally require an approved seller profile.
 
 Seller application review:
 
-| Method | Path | Permission | Purpose |
-| :----- | :--- | :--------- | :------ |
-| POST | `/sellers/applications` | Active buyer | Submit an individual or business seller application |
-| GET | `/sellers/applications/pending` | Active admin | List applications awaiting review |
-| POST | `/sellers/applications/:id/approve` | Active admin | Approve a pending application and assign its owner the seller role |
-| POST | `/sellers/applications/:id/reject` | Active admin | Reject a pending application |
+| Method | Path                                | Permission   | Purpose                                                            |
+| :----- | :---------------------------------- | :----------- | :----------------------------------------------------------------- |
+| POST   | `/sellers/applications`             | Active buyer | Submit an individual or business seller application                |
+| GET    | `/sellers/applications/pending`     | Active admin | List applications awaiting review                                  |
+| POST   | `/sellers/applications/:id/approve` | Active admin | Approve a pending application and assign its owner the seller role |
+| POST   | `/sellers/applications/:id/reject`  | Active admin | Reject a pending application                                       |
 
 Only pending applications can be approved or rejected. Approved seller access
 continues to require both the seller role and an approved profile.
+
+## Product catalog
+
+The category seed data is applied by `pnpm db:seed` alongside the role records.
+It creates the three SRS category trees idempotently. Public category reads
+return active root categories with their active children.
+
+| Method           | Path                                                      | Permission      | Purpose                                                      |
+| :--------------- | :-------------------------------------------------------- | :-------------- | :----------------------------------------------------------- |
+| GET              | `/catalog/categories`                                     | Public          | List active categories                                       |
+| GET              | `/catalog/products?page=1&limit=20`                       | Public          | Page through eligible in-stock products                      |
+| GET              | `/catalog/products/:productId`                            | Public          | Get a publicly available product by UUID                     |
+| GET              | `/catalog/seller/products`                                | Approved seller | List the seller's products                                   |
+| POST             | `/catalog/seller/products`                                | Approved seller | Create a product pending approval                            |
+| GET/PATCH/DELETE | `/catalog/seller/products/:productId`                     | Approved seller | Read, update, or unpublish an owned product                  |
+| POST             | `/catalog/seller/products/:productId/variants`            | Approved seller | Add a variant with price and stock                           |
+| PATCH/DELETE     | `/catalog/seller/products/:productId/variants/:variantId` | Approved seller | Update stock/variant or deactivate it                        |
+| POST             | `/catalog/seller/products/:productId/images`              | Approved seller | Add an HTTPS image URL                                       |
+| PATCH/DELETE     | `/catalog/seller/products/:productId/images/:imageId`     | Approved seller | Update or remove an image URL                                |
+| GET              | `/catalog/admin/products/pending`                         | Active admin    | List pending products with seller and product review details |
+| POST             | `/catalog/admin/products/:productId/approve`              | Active admin    | Approve a valid pending product                              |
+| POST             | `/catalog/admin/products/:productId/reject`               | Active admin    | Reject a pending product                                     |
+
+Product edits, variant changes, and image changes return the product to
+`PENDING_APPROVAL`; seller routes never grant approval. Product and nested
+resource operations are scoped to the authenticated seller profile.
+Moderation accepts only pending products. Approval rechecks product field
+validation, category activity, and seller approval. The current product model
+does not store rejection reasons, so rejection changes status only.
+Public product responses include bilingual product and category fields,
+in-stock active variants, and image metadata; seller details, product status,
+and variant SKU are not exposed. Listings require approved product and seller
+statuses, an active seller account and category, and at least one active,
+in-stock variant.
 
 ## Development administrator
 
@@ -94,7 +128,7 @@ timestamps unset. Complete the existing email and phone verification flows
 before login; verified phone MFA remains required for administrator sign-in.
 The command refuses to change an existing account and does not log the entered
 credentials. It does not reset or migrate the database. The existing
-`pnpm db:seed` command continues to provision role records only.
+`pnpm db:seed` command provisions role records and the SRS category tree.
 
 Check the configured database before applying migrations. For the auth e2e
 suite, use `AUTH_TEST_DATABASE_URL` and confirm it targets `hulegeb_auth_test`:
