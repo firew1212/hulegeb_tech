@@ -246,3 +246,13 @@ model ProductImage {
 
   @@index([productId, sortOrder])
 }
+
+model SearchTermAnalytics {
+  term             String   @id @db.VarChar(100)
+  searchCount      Int      @default(0)
+  totalResultCount Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([searchCount])
+}

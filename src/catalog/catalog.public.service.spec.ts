@@ -3,24 +3,37 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CatalogService } from './catalog.service.js';
 
 function createCatalogService(
-  productFindMany = vi.fn(),
-  productCount = vi.fn(),
+  productFindMany = vi.fn().mockResolvedValue([]),
+  productCount = vi.fn().mockResolvedValue(0),
+  productFindFirst = vi.fn(),
+  queryRaw = vi.fn().mockResolvedValue([]),
 ) {
-  const transaction = vi.fn(async (operations: Promise<unknown>[]) =>
-    Promise.all(operations),
+  const analyticsUpsert = vi.fn().mockResolvedValue({});
+  let prisma: PrismaService;
+  const transaction = vi.fn(
+    (
+      operations:
+        Promise<unknown>[] | ((tx: PrismaService) => Promise<unknown>),
+    ) =>
+      typeof operations === 'function'
+        ? operations(prisma)
+        : Promise.all(operations),
   );
-  const productFindFirst = vi.fn();
-  const prisma = {
+  prisma = {
     $transaction: transaction,
+    $queryRaw: queryRaw,
     product: {
       findMany: productFindMany,
       count: productCount,
       findFirst: productFindFirst,
     },
+    searchTermAnalytics: { upsert: analyticsUpsert },
   } as unknown as PrismaService;
   return {
     service: new CatalogService(prisma),
     transaction,
+    queryRaw,
+    analyticsUpsert,
     productFindFirst,
   };
 }
@@ -126,5 +139,145 @@ describe('CatalogService public product listings', () => {
         }),
       }),
     );
+  });
+
+  it('filters public results and records normalized terms with aggregate counts', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(3);
+    const { service, analyticsUpsert } = createCatalogService(findMany, count);
+
+    await expect(
+      service.listPublicProducts({
+        page: 1,
+        limit: 20,
+        q: '  Linen   shirt ',
+        categoryId: 'category-id',
+        subcategoryId: 'subcategory-id',
+        minPrice: 10,
+        maxPrice: 30,
+        condition: 'USED',
+        sort: 'newest',
+      }),
+    ).resolves.toMatchObject({ data: [], total: 3, totalPages: 1 });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'APPROVED',
+          category: {
+            isActive: true,
+            id: 'subcategory-id',
+            parentId: 'category-id',
+          },
+          seller: { status: 'APPROVED', user: { status: 'ACTIVE' } },
+          condition: 'USED',
+          variants: {
+            some: {
+              isActive: true,
+              stockQuantity: { gt: 0 },
+              price: { gte: 10, lte: 30 },
+            },
+          },
+          OR: [
+            { titleEn: { contains: 'linen shirt', mode: 'insensitive' } },
+            { titleAm: { contains: 'linen shirt', mode: 'insensitive' } },
+            {
+              descriptionEn: {
+                contains: 'linen shirt',
+                mode: 'insensitive',
+              },
+            },
+            {
+              descriptionAm: {
+                contains: 'linen shirt',
+                mode: 'insensitive',
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(analyticsUpsert).toHaveBeenCalledWith({
+      where: { term: 'linen shirt' },
+      create: {
+        term: 'linen shirt',
+        searchCount: 1,
+        totalResultCount: 3,
+      },
+      update: {
+        searchCount: { increment: 1 },
+        totalResultCount: { increment: 3 },
+      },
+    });
+  });
+
+  it('sorts products by their lowest eligible variant price and paginates in SQL', async () => {
+    const products = [{ id: 'first' }, { id: 'second' }];
+    const findMany = vi.fn().mockResolvedValue([products[1], products[0]]);
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValue([{ id: 'first' }, { id: 'second' }]);
+    const count = vi.fn().mockResolvedValue(2);
+    const { service, transaction } = createCatalogService(
+      findMany,
+      count,
+      vi.fn(),
+      queryRaw,
+    );
+
+    await expect(
+      service.listPublicProducts({
+        page: 2,
+        limit: 1,
+        minPrice: 15,
+        sort: 'price_asc',
+      }),
+    ).resolves.toMatchObject({
+      data: [products[0], products[1]],
+      page: 2,
+      limit: 1,
+      total: 2,
+    });
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'APPROVED',
+          variants: {
+            some: {
+              isActive: true,
+              stockQuantity: { gt: 0 },
+              price: { gte: 15 },
+            },
+          },
+        }),
+      }),
+    );
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects inverted price ranges before querying and does not log empty searches', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const { service, transaction, analyticsUpsert } =
+      createCatalogService(findMany);
+
+    await expect(
+      service.listPublicProducts({
+        page: 1,
+        limit: 20,
+        minPrice: 20,
+        maxPrice: 10,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(transaction).not.toHaveBeenCalled();
+
+    await service.listPublicProducts({
+      page: 1,
+      limit: 20,
+      q: '   ',
+      sort: 'newest',
+    });
+    expect(analyticsUpsert).not.toHaveBeenCalled();
   });
 });

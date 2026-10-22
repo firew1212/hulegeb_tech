@@ -46,4 +46,40 @@ describe('public product pagination validation', () => {
       expect.arrayContaining(invalidFields),
     );
   });
+
+  it('normalizes search terms and transforms filter values', () => {
+    const pagination = plainToInstance(PublicProductPaginationDto, {
+      q: '  Linen   shirt ',
+      categoryId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+      subcategoryId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+      minPrice: '12.50',
+      maxPrice: '25',
+      condition: 'USED',
+      sort: 'price_asc',
+    });
+
+    expect(validateSync(pagination)).toEqual([]);
+    expect(pagination).toMatchObject({
+      q: 'Linen shirt',
+      minPrice: 12.5,
+      maxPrice: 25,
+      condition: 'USED',
+      sort: 'price_asc',
+    });
+  });
+
+  it.each([
+    [{ minPrice: '-1' }, ['minPrice']],
+    [{ maxPrice: '10.001' }, ['maxPrice']],
+    [{ categoryId: 'not-a-uuid' }, ['categoryId']],
+    [{ condition: 'DAMAGED' }, ['condition']],
+    [{ sort: 'rating' }, ['sort']],
+    [{ q: 'x'.repeat(101) }, ['q']],
+  ])('rejects invalid public search query %j', (query, invalidFields) => {
+    const pagination = plainToInstance(PublicProductPaginationDto, query);
+
+    expect(validateSync(pagination).map(({ property }) => property)).toEqual(
+      expect.arrayContaining(invalidFields),
+    );
+  });
 });

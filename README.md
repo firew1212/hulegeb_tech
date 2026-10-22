@@ -88,7 +88,7 @@ return active root categories with their active children.
 | Method           | Path                                                      | Permission      | Purpose                                                      |
 | :--------------- | :-------------------------------------------------------- | :-------------- | :----------------------------------------------------------- |
 | GET              | `/catalog/categories`                                     | Public          | List active categories                                       |
-| GET              | `/catalog/products?page=1&limit=20`                       | Public          | Page through eligible in-stock products                      |
+| GET              | `/catalog/products?page=1&limit=20`                       | Public          | Search and page through eligible in-stock products           |
 | GET              | `/catalog/products/:productId`                            | Public          | Get a publicly available product by UUID                     |
 | GET              | `/catalog/seller/products`                                | Approved seller | List the seller's products                                   |
 | POST             | `/catalog/seller/products`                                | Approved seller | Create a product pending approval                            |
@@ -112,6 +112,16 @@ in-stock active variants, and image metadata; seller details, product status,
 and variant SKU are not exposed. Listings require approved product and seller
 statuses, an active seller account and category, and at least one active,
 in-stock variant.
+
+The public listing accepts optional `q`, `categoryId`, `subcategoryId`,
+`minPrice`, `maxPrice`, `condition`, and `sort` query parameters. Keyword
+search checks English and Amharic titles and descriptions; a category ID
+includes its direct subcategories, while a subcategory ID narrows to that
+category. Price bounds match in-stock active variants. Sort values are
+`newest` (default), `oldest`, `price_asc`, and `price_desc`. Pagination is
+bounded to 100 results per page. Non-empty normalized search terms are stored
+without user identifiers and aggregated with search counts and total result
+counts.
 
 ## Development administrator
 
