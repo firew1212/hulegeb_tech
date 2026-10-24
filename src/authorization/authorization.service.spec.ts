@@ -1,38 +1,38 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { RoleCode } from './authorization.constants.js';
+import { RoleCode, type RequestUser } from './authorization.constants.js';
 import { AuthorizationService } from './authorization.service.js';
 import { RequireRoles } from './roles.decorator.js';
 import { RolesGuard } from './roles.guard.js';
 
-const buyerUser = {
+const buyerUser: RequestUser = {
   id: 'buyer-1',
   roles: [RoleCode.BUYER],
   status: 'ACTIVE',
 };
 
-const sellerUserPendingApproval = {
+const sellerUserPendingApproval: RequestUser = {
   id: 'seller-1',
   roles: [RoleCode.SELLER],
   status: 'ACTIVE',
   sellerStatus: 'PENDING_APPROVAL',
 };
 
-const sellerUserRejected = {
+const sellerUserRejected: RequestUser = {
   id: 'seller-3',
   roles: [RoleCode.SELLER],
   status: 'ACTIVE',
   sellerStatus: 'REJECTED',
 };
 
-const sellerUserApproved = {
+const sellerUserApproved: RequestUser = {
   id: 'seller-2',
   roles: [RoleCode.SELLER],
   status: 'ACTIVE',
   sellerStatus: 'APPROVED',
 };
 
-const adminUser = {
+const adminUser: RequestUser = {
   id: 'admin-1',
   roles: [RoleCode.ADMIN],
   status: 'ACTIVE',

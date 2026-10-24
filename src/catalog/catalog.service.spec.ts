@@ -25,6 +25,51 @@ function sellerProfileMock(status = 'APPROVED') {
   };
 }
 
+function createProductModerationService(
+  updatedCount = 1,
+  resultStatus: 'APPROVED' | 'REJECTED' = 'APPROVED',
+) {
+  const productFindUnique = vi.fn().mockResolvedValue({
+    id: 'product-id',
+    slug: 'sample-product',
+    titleEn: 'Sample Product',
+    titleAm: 'የሙከራ ምርት',
+    descriptionEn: null,
+    descriptionAm: null,
+    status: 'PENDING_APPROVAL',
+    category: { isActive: true },
+    seller: {
+      status: 'APPROVED',
+      user: { id: 'seller-owner-id' },
+    },
+  });
+  const productUpdateMany = vi.fn().mockResolvedValue({ count: updatedCount });
+  const productFindUniqueOrThrow = vi.fn().mockResolvedValue({
+    id: 'product-id',
+    status: resultStatus,
+  });
+  const notificationCreate = vi.fn().mockResolvedValue({});
+  const transactionClient = {
+    product: {
+      findUnique: productFindUnique,
+      updateMany: productUpdateMany,
+      findUniqueOrThrow: productFindUniqueOrThrow,
+    },
+    notification: { create: notificationCreate },
+  };
+  const transaction = vi.fn(
+    (callback: (tx: typeof transactionClient) => unknown) =>
+      callback(transactionClient),
+  );
+
+  return {
+    service: createCatalogService({ $transaction: transaction }),
+    notificationCreate,
+    productFindUnique,
+    productUpdateMany,
+  };
+}
+
 describe('CatalogService', () => {
   it('lists all categories, including inactive records, in hierarchy order', async () => {
     const findMany = vi.fn().mockResolvedValue([
@@ -249,6 +294,63 @@ describe('CatalogService', () => {
         },
       },
     });
+  });
+
+  it('notifies the seller when a pending product is approved', async () => {
+    const context = createProductModerationService(1, 'APPROVED');
+
+    await expect(
+      context.service.approveProduct('product-id'),
+    ).resolves.toMatchObject({ id: 'product-id', status: 'APPROVED' });
+    expect(context.notificationCreate).toHaveBeenCalledWith({
+      data: {
+        type: 'PRODUCT_APPROVED',
+        userId: 'seller-owner-id',
+        resourceId: 'product-id',
+      },
+    });
+    expect(context.productFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          seller: {
+            select: { status: true, user: { select: { id: true } } },
+          },
+        }),
+      }),
+    );
+  });
+
+  it('does not notify when product approval loses the conditional update', async () => {
+    const context = createProductModerationService(0);
+
+    await expect(
+      context.service.approveProduct('product-id'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(context.notificationCreate).not.toHaveBeenCalled();
+  });
+
+  it('notifies the seller when a pending product is rejected', async () => {
+    const context = createProductModerationService(1, 'REJECTED');
+
+    await expect(
+      context.service.rejectProduct('product-id'),
+    ).resolves.toMatchObject({ id: 'product-id', status: 'REJECTED' });
+    expect(context.notificationCreate).toHaveBeenCalledWith({
+      data: {
+        type: 'PRODUCT_REJECTED',
+        userId: 'seller-owner-id',
+        resourceId: 'product-id',
+      },
+    });
+  });
+
+  it('does not notify when product rejection loses the conditional update', async () => {
+    const context = createProductModerationService(0, 'REJECTED');
+
+    await expect(
+      context.service.rejectProduct('product-id'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(context.notificationCreate).not.toHaveBeenCalled();
   });
 
   it('creates a product owned by the authenticated seller in pending approval', async () => {

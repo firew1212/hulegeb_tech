@@ -155,7 +155,6 @@ function existingOrderFor(items: CreateOrderDto['items']) {
     buyerId,
     status: 'PENDING',
     paymentOption: null,
-    paymentAmount: null,
     currency: 'ETB',
     total: { toString: () => '6.8' },
     requestHash: payloadHash(items),
@@ -360,6 +359,11 @@ function createOrderWorkflowService(options?: {
   const inventory = new Map(
     Object.entries(options?.inventory ?? { [variantOne]: 1 }),
   );
+  const notifications: {
+    type: string;
+    userId: string;
+    resourceId: string;
+  }[] = [];
 
   function getOrderForRead() {
     return {
@@ -377,6 +381,7 @@ function createOrderWorkflowService(options?: {
       };
       return {
         id: order.id,
+        ...('buyerId' in select ? { buyerId: order.buyerId } : {}),
         status: order.status,
         ...('total' in select ? { total: order.total } : {}),
         ...('items' in select ? { items } : {}),
@@ -491,12 +496,21 @@ function createOrderWorkflowService(options?: {
     },
     orderStockReservation: { updateMany: updateReservationMany },
     productVariant: { updateMany: updateVariantMany },
+    notification: {
+      create: vi.fn(
+        async ({ data }: { data: (typeof notifications)[number] }) => {
+          notifications.push(data);
+          return {};
+        },
+      ),
+    },
   };
   const transaction = vi.fn(
     async (callback: (transaction: typeof tx) => Promise<unknown>) => {
       const orderSnapshot = { ...order };
       const inventorySnapshot = new Map(inventory);
       const reservationSnapshot = reservations.map((entry) => ({ ...entry }));
+      const notificationSnapshot = [...notifications];
       try {
         return await callback(tx);
       } catch (error) {
@@ -506,6 +520,7 @@ function createOrderWorkflowService(options?: {
           inventory.set(id, stock);
         }
         reservations.splice(0, reservations.length, ...reservationSnapshot);
+        notifications.splice(0, notifications.length, ...notificationSnapshot);
         throw error;
       }
     },
@@ -526,6 +541,7 @@ function createOrderWorkflowService(options?: {
     updateOrderMany,
     updateReservationMany,
     updateVariantMany,
+    notifications,
   };
 }
 
@@ -591,13 +607,16 @@ describe('OrdersService admin order management', () => {
       .fn()
       .mockResolvedValueOnce({
         id: safeReadOrder.id,
+        buyerId,
         status: 'PENDING',
         stockReservations: [],
       })
       .mockResolvedValueOnce(cancelledOrder);
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const notificationCreate = vi.fn().mockResolvedValue({});
     const transactionClient = {
       order: { findUnique, updateMany },
+      notification: { create: notificationCreate },
     };
     const transaction = vi.fn(
       async (callback: (tx: typeof transactionClient) => Promise<unknown>) =>
@@ -616,6 +635,7 @@ describe('OrdersService admin order management', () => {
       where: { id: safeReadOrder.id },
       select: {
         id: true,
+        buyerId: true,
         status: true,
         stockReservations: {
           where: { releasedAt: null },
@@ -626,6 +646,13 @@ describe('OrdersService admin order management', () => {
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: safeReadOrder.id, status: 'PENDING' },
       data: { status: 'CANCELLED' },
+    });
+    expect(notificationCreate).toHaveBeenCalledWith({
+      data: {
+        type: 'ORDER_CANCELLED',
+        userId: buyerId,
+        resourceId: safeReadOrder.id,
+      },
     });
     expect(findUnique).toHaveBeenNthCalledWith(2, {
       where: { id: safeReadOrder.id },
@@ -677,6 +704,36 @@ describe('OrdersService admin order management', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(updateMany).not.toHaveBeenCalled();
   });
+
+  it.each(['CANCELLED', 'COMPLETED'] as const)(
+    'does not notify when an order %s transition loses the conditional update',
+    async (status) => {
+      const findUnique = vi.fn().mockResolvedValue({
+        id: safeReadOrder.id,
+        buyerId,
+        status: 'PENDING',
+        stockReservations: [],
+      });
+      const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+      const notificationCreate = vi.fn();
+      const transactionClient = {
+        order: { findUnique, updateMany },
+        notification: { create: notificationCreate },
+      };
+      const service = new OrdersService({
+        $transaction: vi.fn(
+          async (
+            callback: (tx: typeof transactionClient) => Promise<unknown>,
+          ) => callback(transactionClient),
+        ),
+      } as unknown as PrismaService);
+
+      await expect(
+        service.updateAdminOrderStatus(safeReadOrder.id, status),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(notificationCreate).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('OrdersService.confirmAdminOrderStock', () => {
@@ -957,6 +1014,13 @@ describe('OrdersService order completion and cancellation', () => {
     expect(context.inventory.get(variantOne)).toBe(1);
     expect(context.reservations[0].releasedAt).toBeNull();
     expect(context.updateVariantMany).not.toHaveBeenCalled();
+    expect(context.notifications).toEqual([
+      {
+        type: 'ORDER_COMPLETED',
+        userId: buyerId,
+        resourceId: safeReadOrder.id,
+      },
+    ]);
   });
 
   it('cancels and releases active stock reservations exactly once', async () => {
@@ -970,6 +1034,13 @@ describe('OrdersService order completion and cancellation', () => {
     expect(context.reservations[0].releasedAt).toBeInstanceOf(Date);
     expect(context.updateVariantMany).toHaveBeenCalledOnce();
     expect(context.updateReservationMany).toHaveBeenCalledOnce();
+    expect(context.notifications).toEqual([
+      {
+        type: 'ORDER_CANCELLED',
+        userId: buyerId,
+        resourceId: safeReadOrder.id,
+      },
+    ]);
   });
 
   it('safely cancels an order with no reservations', async () => {
@@ -994,6 +1065,7 @@ describe('OrdersService order completion and cancellation', () => {
     expect(context.order.status).toBe('PENDING');
     expect(context.inventory.get(variantOne)).toBe(1);
     expect(context.reservations[0].releasedAt).toBeNull();
+    expect(context.notifications).toEqual([]);
   });
 });
 

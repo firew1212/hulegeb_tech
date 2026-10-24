@@ -273,6 +273,7 @@ export class OrdersService {
           where: { id: orderId },
           select: {
             id: true,
+            buyerId: true,
             status: true,
             stockReservations: {
               where: { releasedAt: null },
@@ -301,6 +302,18 @@ export class OrdersService {
           });
           if (updated.count !== 1) {
             throw new ConflictException('Order status has changed.');
+          }
+          if (status === 'CANCELLED' || status === 'COMPLETED') {
+            await tx.notification.create({
+              data: {
+                type:
+                  status === 'CANCELLED'
+                    ? 'ORDER_CANCELLED'
+                    : 'ORDER_COMPLETED',
+                userId: order.buyerId,
+                resourceId: order.id,
+              },
+            });
           }
         }
 

@@ -116,9 +116,11 @@ describe('SellerApplicationsService', () => {
   });
 
   it('approves only a pending profile and assigns SELLER to that profile owner', async () => {
-    const findUnique = vi
-      .fn()
-      .mockResolvedValue({ id: 'application-1', userId: 'applicant-1', status: 'PENDING_APPROVAL' });
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'application-1',
+      userId: 'applicant-1',
+      status: 'PENDING_APPROVAL',
+    });
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const findUniqueOrThrow = vi.fn().mockResolvedValue({
       id: 'application-1',
@@ -127,10 +129,12 @@ describe('SellerApplicationsService', () => {
     });
     const roleUpsert = vi.fn().mockResolvedValue({ id: 'seller-role-id' });
     const userRoleUpsert = vi.fn().mockResolvedValue({});
+    const notificationCreate = vi.fn().mockResolvedValue({});
     const { service, transaction } = createReviewService({
       sellerProfile: { findUnique, updateMany, findUniqueOrThrow },
       role: { upsert: roleUpsert },
       userRole: { upsert: userRoleUpsert },
+      notification: { create: notificationCreate },
     });
 
     await expect(service.approve('application-1')).resolves.toMatchObject({
@@ -148,46 +152,80 @@ describe('SellerApplicationsService', () => {
       update: {},
       create: { userId: 'applicant-1', roleId: 'seller-role-id' },
     });
+    expect(notificationCreate).toHaveBeenCalledWith({
+      data: {
+        type: 'SELLER_APPLICATION_APPROVED',
+        userId: 'applicant-1',
+        resourceId: 'application-1',
+      },
+    });
     expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it('does not notify when approval loses the conditional status update', async () => {
+    const notificationCreate = vi.fn();
+    const { service } = createReviewService({
+      sellerProfile: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'application-1',
+          userId: 'applicant-1',
+          status: 'PENDING_APPROVAL',
+        }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      notification: { create: notificationCreate },
+      role: { upsert: vi.fn() },
+      userRole: { upsert: vi.fn() },
+    });
+
+    await expect(service.approve('application-1')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(notificationCreate).not.toHaveBeenCalled();
   });
 
   it.each([
     [null, 'not found'],
     [{ id: 'application-1', status: 'REJECTED' }, 'already rejected'],
-  ])('refuses to approve an unavailable or non-pending application', async (
-    application,
-  ) => {
-    const findUnique = vi.fn().mockResolvedValue(application);
-    const { service } = createReviewService({
-      sellerProfile: { findUnique },
-      role: { upsert: vi.fn() },
-      userRole: { upsert: vi.fn() },
-    });
-
-    if (application === null) {
-      await expect(service.approve('missing')).rejects.toMatchObject({
-        status: 404,
+  ])(
+    'refuses to approve an unavailable or non-pending application',
+    async (application, _description) => {
+      const findUnique = vi.fn().mockResolvedValue(application);
+      const { service } = createReviewService({
+        sellerProfile: { findUnique },
+        role: { upsert: vi.fn() },
+        userRole: { upsert: vi.fn() },
       });
-    } else {
-      await expect(service.approve('application-1')).rejects.toBeInstanceOf(
-        ConflictException,
-      );
-    }
-  });
+
+      if (application === null) {
+        await expect(service.approve('missing')).rejects.toMatchObject({
+          status: 404,
+        });
+      } else {
+        await expect(service.approve('application-1')).rejects.toBeInstanceOf(
+          ConflictException,
+        );
+      }
+    },
+  );
 
   it('rejects only pending applications without assigning seller access', async () => {
-    const findUnique = vi
-      .fn()
-      .mockResolvedValue({ id: 'application-2', status: 'PENDING_APPROVAL' });
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'application-2',
+      userId: 'applicant-2',
+      status: 'PENDING_APPROVAL',
+    });
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const findUniqueOrThrow = vi.fn().mockResolvedValue({
       id: 'application-2',
       status: 'REJECTED',
     });
     const userRoleUpsert = vi.fn();
+    const notificationCreate = vi.fn().mockResolvedValue({});
     const { service } = createReviewService({
       sellerProfile: { findUnique, updateMany, findUniqueOrThrow },
       userRole: { upsert: userRoleUpsert },
+      notification: { create: notificationCreate },
     });
 
     await expect(service.reject('application-2')).resolves.toMatchObject({
@@ -198,5 +236,32 @@ describe('SellerApplicationsService', () => {
       data: { status: 'REJECTED' },
     });
     expect(userRoleUpsert).not.toHaveBeenCalled();
+    expect(notificationCreate).toHaveBeenCalledWith({
+      data: {
+        type: 'SELLER_APPLICATION_REJECTED',
+        userId: 'applicant-2',
+        resourceId: 'application-2',
+      },
+    });
+  });
+
+  it('does not notify when rejection loses the conditional status update', async () => {
+    const notificationCreate = vi.fn();
+    const { service } = createReviewService({
+      sellerProfile: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'application-2',
+          userId: 'applicant-2',
+          status: 'PENDING_APPROVAL',
+        }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      notification: { create: notificationCreate },
+    });
+
+    await expect(service.reject('application-2')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(notificationCreate).not.toHaveBeenCalled();
   });
 });

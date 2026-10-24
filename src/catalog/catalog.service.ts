@@ -462,7 +462,9 @@ export class CatalogService {
           descriptionAm: true,
           status: true,
           category: { select: { isActive: true } },
-          seller: { select: { status: true } },
+          seller: {
+            select: { status: true, user: { select: { id: true } } },
+          },
         },
       });
       if (!product) {
@@ -504,6 +506,14 @@ export class CatalogService {
         throw new ConflictException('Product status has changed.');
       }
 
+      await tx.notification.create({
+        data: {
+          type: 'PRODUCT_APPROVED',
+          userId: product.seller.user.id,
+          resourceId: product.id,
+        },
+      });
+
       return tx.product.findUniqueOrThrow({
         where: { id: product.id },
         include: productModerationDetails,
@@ -515,7 +525,11 @@ export class CatalogService {
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.product.findUnique({
         where: { id: productId },
-        select: { id: true, status: true },
+        select: {
+          id: true,
+          status: true,
+          seller: { select: { user: { select: { id: true } } } },
+        },
       });
       if (!product) {
         throw new NotFoundException('Product not found.');
@@ -531,6 +545,14 @@ export class CatalogService {
       if (updated.count !== 1) {
         throw new ConflictException('Product status has changed.');
       }
+
+      await tx.notification.create({
+        data: {
+          type: 'PRODUCT_REJECTED',
+          userId: product.seller.user.id,
+          resourceId: product.id,
+        },
+      });
 
       return tx.product.findUniqueOrThrow({
         where: { id: product.id },
