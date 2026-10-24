@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
+  assertProductionDatabaseIdentity,
+  assertProductionDatabaseTarget,
   assertDevelopmentDatabaseIdentity,
   assertDevelopmentDatabaseTarget,
 } from './admin-provisioning.js';
@@ -35,6 +37,11 @@ describe('development admin provisioning safety', () => {
         ...safeEnvironment,
         DATABASE_URL: 'mysql://127.0.0.1:5433/hulegeb_dev',
       },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://127.0.0.1:5433/hulegeb_dev?host=production-db.example',
+      },
     ]) {
       expect(() => assertDevelopmentDatabaseTarget(environment)).toThrow();
     }
@@ -53,6 +60,80 @@ describe('development admin provisioning safety', () => {
       [],
     ]) {
       expect(() => assertDevelopmentDatabaseIdentity(identity)).toThrow();
+    }
+  });
+});
+
+describe('production admin provisioning safety', () => {
+  const safeEnvironment: NodeJS.ProcessEnv = {
+    NODE_ENV: 'production',
+    DATABASE_URL:
+      'postgresql://admin:secret@postgres.prod.internal:5432/hulegeb',
+  };
+
+  it('accepts only a remote production PostgreSQL target', () => {
+    expect(
+      assertProductionDatabaseTarget(safeEnvironment).hostname,
+    ).toBe('postgres.prod.internal');
+
+    for (const environment of [
+      { ...safeEnvironment, NODE_ENV: 'development' },
+      { ...safeEnvironment, DATABASE_URL: undefined },
+      {
+        ...safeEnvironment,
+        DATABASE_URL: 'postgresql://admin:secret@localhost:5432/hulegeb',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://admin:secret@postgres:5432/hulegeb',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://admin:secret@127.0.0.1:5433/hulegeb_dev',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://admin:secret@postgres.prod.internal:5432/hulegeb_auth_test',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://admin:secret@postgres.prod.internal:5432/hulegeb_staging',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL: 'mysql://admin:secret@postgres.prod.internal:5432/hulegeb',
+      },
+      {
+        ...safeEnvironment,
+        DATABASE_URL:
+          'postgresql://admin:secret@postgres.prod.internal:5432/hulegeb?host=localhost',
+      },
+    ]) {
+      expect(() => assertProductionDatabaseTarget(environment)).toThrow();
+    }
+  });
+
+  it('checks the connected production database name and port', () => {
+    const target = assertProductionDatabaseTarget(safeEnvironment);
+    expect(() =>
+      assertProductionDatabaseIdentity(
+        [{ databaseName: 'hulegeb', serverPort: 5432 }],
+        target,
+      ),
+    ).not.toThrow();
+
+    for (const identity of [
+      [{ databaseName: 'hulegeb_auth_test', serverPort: 5432 }],
+      [{ databaseName: 'hulegeb', serverPort: 5433 }],
+      [],
+    ]) {
+      expect(() =>
+        assertProductionDatabaseIdentity(identity, target),
+      ).toThrow();
     }
   });
 });

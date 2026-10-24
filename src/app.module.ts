@@ -15,20 +15,19 @@ import { CatalogModule } from './catalog/catalog.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { CartModule } from './cart/cart.module.js';
+import { getObserveOptions, validateEnvironment } from './config/environment.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
+const observeOptions = getObserveOptions();
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      validate: validateEnvironment,
     }),
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 60 }]),
-    ObserveModule.forRoot({
-      appKey: 'YOUR_APP_KEY',
-      appSecret: 'YOUR_APP_SECRET',
-      serviceId: 'back-end',
-    }),
+    ...(observeOptions ? [ObserveModule.forRoot(observeOptions)] : []),
     PrismaModule,
     AuthModule,
     AuthorizationModule,
