@@ -12,6 +12,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { AuthenticationGuard } from './auth/authentication.guard.js';
 import { SellersModule } from './sellers/sellers.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
+import { OrdersModule } from './orders/orders.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -31,6 +32,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     AuthorizationModule,
     SellersModule,
     CatalogModule,
+    OrdersModule,
   ],
   controllers: [AppController],
   providers: [

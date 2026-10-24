@@ -50,6 +50,18 @@ enum ProductStatus {
   REMOVED
 }
 
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentOption {
+  DEPOSIT
+  FULL
+}
+
 enum AuthChallengeType {
   EMAIL_VERIFICATION
   PHONE_VERIFICATION
@@ -79,6 +91,7 @@ model User {
   authChallenges  AuthChallenge[]
   authSessions    AuthSession[]
   authAuditEvents AuthAuditEvent[]
+  orders          Order[]
 
   @@index([status])
   @@index([createdAt])
@@ -204,10 +217,11 @@ model Product {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
-  seller   SellerProfile    @relation(fields: [sellerId], references: [id], onDelete: Restrict)
-  category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  variants ProductVariant[]
-  images   ProductImage[]
+  seller     SellerProfile    @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  category   Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  variants   ProductVariant[]
+  images     ProductImage[]
+  orderItems OrderItem[]
 
   @@index([sellerId, status])
   @@index([categoryId, status])
@@ -227,7 +241,9 @@ model ProductVariant {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product           Product                 @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems        OrderItem[]
+  stockReservations OrderStockReservation[]
 
   @@index([productId, isActive])
 }
@@ -255,4 +271,64 @@ model SearchTermAnalytics {
   updatedAt        DateTime @updatedAt
 
   @@index([searchCount])
+}
+
+// ---------- ORDERS ----------
+
+model Order {
+  id             String      @id @default(uuid()) @db.Uuid
+  buyerId        String      @db.Uuid
+  status         OrderStatus @default(PENDING)
+  paymentOption  PaymentOption?
+  currency       String      @default("ETB") @db.VarChar(3)
+  total          Decimal     @db.Decimal(18, 2)
+  idempotencyKey String?
+  requestHash    String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  buyer             User                   @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  items             OrderItem[]
+  stockReservations OrderStockReservation[]
+
+  @@unique([buyerId, idempotencyKey])
+  @@index([buyerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  orderId        String   @db.Uuid
+  productId      String?  @db.Uuid
+  variantId      String?  @db.Uuid
+  productNameEn  String
+  productNameAm  String
+  variantName    String
+  quantity       Int
+  unitPrice      Decimal  @db.Decimal(12, 2)
+  lineTotal      Decimal  @db.Decimal(18, 2)
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([variantId])
+}
+
+model OrderStockReservation {
+  id         String    @id @default(uuid()) @db.Uuid
+  orderId    String    @db.Uuid
+  variantId  String    @db.Uuid
+  quantity   Int
+  reservedAt DateTime  @default(now())
+  releasedAt DateTime?
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, variantId])
+  @@index([orderId, releasedAt])
+  @@index([variantId, releasedAt])
 }

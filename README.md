@@ -40,9 +40,11 @@ The webhook receives authenticated JSON POST requests with `event`,
 not log tokens. Console delivery is permitted only when `NODE_ENV` is explicitly
 `development` or `test`; it prints verification tokens and is not for deployment.
 
-The PostgreSQL e2e suite refuses to start unless `AUTH_TEST_DATABASE_URL` is set
-explicitly to a URL whose database name is `hulegeb_auth_test`. It then replaces
-`DATABASE_URL` for that test process. Do not point this variable at development
+The PostgreSQL e2e suite refuses to start unless `AUTH_TEST_DATABASE_URL`
+explicitly targets the dedicated `hulegeb_auth_test` database on the local
+Docker Compose PostgreSQL endpoint `127.0.0.1:5433`. It then replaces
+`DATABASE_URL` for that test process. URLs using other hosts, ports, or database
+names are rejected before tests run. Do not point this variable at development
 or production databases.
 
 Authentication endpoints:
@@ -123,6 +125,21 @@ bounded to 100 results per page. Non-empty normalized search terms are stored
 without user identifiers and aggregated with search counts and total result
 counts.
 
+## Checkout
+
+| Method | Path      | Permission   | Purpose                                     |
+| :----- | :-------- | :----------- | :------------------------------------------ |
+| POST   | `/orders` | Active buyer | Create a pending order from catalog variants |
+
+Checkout requires the authenticated buyer's bearer token and an
+`Idempotency-Key` header containing 1-255 ASCII letters, digits, dots,
+underscores, colons, or hyphens; the first character must be a letter or digit.
+Send `items` as an array of `{ "variantId": "<UUID>", "quantity": 1 }` entries.
+The buyer identity and prices are taken from the authenticated session and
+database, not the request body. Retrying the same key and payload returns the
+existing order; using that key with a different payload returns `409 Conflict`.
+Stock is validated during checkout but is not reserved or decremented.
+
 ## Development administrator
 
 From `back-end`, run `pnpm db:seed:admin`. The command requires
@@ -141,7 +158,8 @@ credentials. It does not reset or migrate the database. The existing
 `pnpm db:seed` command provisions role records and the SRS category tree.
 
 Check the configured database before applying migrations. For the auth e2e
-suite, use `AUTH_TEST_DATABASE_URL` and confirm it targets `hulegeb_auth_test`:
+suite, set `AUTH_TEST_DATABASE_URL` to the explicitly allowlisted local test
+endpoint and confirm the migrations target `hulegeb_auth_test`:
 
 ```bash
 pnpm exec prisma migrate deploy
