@@ -202,6 +202,16 @@ export function hasObserveOptions(
 export function validateEnvironment(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (
+    config.NODE_ENV !== 'development' &&
+    config.NODE_ENV !== 'test' &&
+    config.NODE_ENV !== 'production'
+  ) {
+    throw new Error(
+      'NODE_ENV must be explicitly set to development, test, or production.',
+    );
+  }
+
   getObserveOptions({
     OBSERVE_APP_KEY:
       typeof config.OBSERVE_APP_KEY === 'string'

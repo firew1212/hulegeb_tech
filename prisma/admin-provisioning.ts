@@ -165,9 +165,10 @@ export function assertProductionDatabaseIdentity(
 }
 
 export async function verifyDevelopmentDatabase(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, '$queryRaw'>,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  assertDevelopmentDatabaseTarget(process.env);
+  assertDevelopmentDatabaseTarget(environment);
   const identity = await prisma.$queryRaw<
     { databaseName: string; serverPort: number | null }[]
   >`SELECT current_database() AS "databaseName", inet_server_port() AS "serverPort"`;
