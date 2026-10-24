@@ -268,93 +268,112 @@ export class OrdersService {
     retry: number,
   ): Promise<OrderResponse> {
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const order = await tx.order.findUnique({
-          where: { id: orderId },
-          select: {
-            id: true,
-            buyerId: true,
-            status: true,
-            stockReservations: {
-              where: { releasedAt: null },
-              select: { id: true, variantId: true, quantity: true },
-            },
-          },
-        });
-        if (!order) {
-          throw new NotFoundException('Order was not found.');
-        }
-        const isRepeatedCancellation =
-          order.status === 'CANCELLED' && status === 'CANCELLED';
-        if (
-          !isRepeatedCancellation &&
-          !allowedOrderStatusTransitions[order.status].includes(status)
-        ) {
-          throw new ConflictException(
-            `Order cannot transition from ${order.status} to ${status}.`,
-          );
-        }
-
-        if (!isRepeatedCancellation) {
-          const updated = await tx.order.updateMany({
-            where: { id: order.id, status: order.status },
-            data: { status },
-          });
-          if (updated.count !== 1) {
-            throw new ConflictException('Order status has changed.');
-          }
-          if (status === 'CANCELLED' || status === 'COMPLETED') {
-            await tx.notification.create({
-              data: {
-                type:
-                  status === 'CANCELLED'
-                    ? 'ORDER_CANCELLED'
-                    : 'ORDER_COMPLETED',
-                userId: order.buyerId,
-                resourceId: order.id,
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const order = await tx.order.findUnique({
+            where: { id: orderId },
+            select: {
+              id: true,
+              buyerId: true,
+              status: true,
+              paymentOption: true,
+              stockReservations: {
+                where: { releasedAt: null },
+                select: { id: true, variantId: true, quantity: true },
               },
-            });
+            },
+          });
+          if (!order) {
+            throw new NotFoundException('Order was not found.');
           }
-        }
-
-        if (status === 'CANCELLED') {
-          for (const reservation of order.stockReservations) {
-            if (
-              !Number.isInteger(reservation.quantity) ||
-              reservation.quantity < 1
-            ) {
+          const isRepeatedCancellation =
+            order.status === 'CANCELLED' && status === 'CANCELLED';
+          if (
+            !isRepeatedCancellation &&
+            !allowedOrderStatusTransitions[order.status].includes(status)
+          ) {
+            throw new ConflictException(
+              `Order cannot transition from ${order.status} to ${status}.`,
+            );
+          }
+          if (status === 'COMPLETED') {
+            if (order.stockReservations.length === 0) {
               throw new ConflictException(
-                'The order has an invalid stock reservation.',
+                'Stock must be actively reserved before completing the order.',
               );
             }
-            const releasedAt = new Date();
-            const released = await tx.orderStockReservation.updateMany({
-              where: { id: reservation.id, releasedAt: null },
-              data: { releasedAt },
+            if (
+              order.paymentOption !== 'DEPOSIT' &&
+              order.paymentOption !== 'FULL'
+            ) {
+              throw new ConflictException(
+                'A payment option must be selected before completing the order.',
+              );
+            }
+          }
+
+          if (!isRepeatedCancellation) {
+            const updated = await tx.order.updateMany({
+              where: { id: order.id, status: order.status },
+              data: { status },
             });
-            if (released.count === 1) {
-              const restored = await tx.productVariant.updateMany({
-                where: { id: reservation.variantId },
-                data: { stockQuantity: { increment: reservation.quantity } },
+            if (updated.count !== 1) {
+              throw new ConflictException('Order status has changed.');
+            }
+            if (status === 'CANCELLED' || status === 'COMPLETED') {
+              await tx.notification.create({
+                data: {
+                  type:
+                    status === 'CANCELLED'
+                      ? 'ORDER_CANCELLED'
+                      : 'ORDER_COMPLETED',
+                  userId: order.buyerId,
+                  resourceId: order.id,
+                },
               });
-              if (restored.count !== 1) {
+            }
+          }
+
+          if (status === 'CANCELLED') {
+            for (const reservation of order.stockReservations) {
+              if (
+                !Number.isInteger(reservation.quantity) ||
+                reservation.quantity < 1
+              ) {
                 throw new ConflictException(
-                  'A reserved product variant could not be restored.',
+                  'The order has an invalid stock reservation.',
                 );
+              }
+              const releasedAt = new Date();
+              const released = await tx.orderStockReservation.updateMany({
+                where: { id: reservation.id, releasedAt: null },
+                data: { releasedAt },
+              });
+              if (released.count === 1) {
+                const restored = await tx.productVariant.updateMany({
+                  where: { id: reservation.variantId },
+                  data: { stockQuantity: { increment: reservation.quantity } },
+                });
+                if (restored.count !== 1) {
+                  throw new ConflictException(
+                    'A reserved product variant could not be restored.',
+                  );
+                }
               }
             }
           }
-        }
 
-        const updatedOrder = await tx.order.findUnique({
-          where: { id: order.id },
-          select: orderSelect,
-        });
-        if (!updatedOrder) {
-          throw new NotFoundException('Order was not found.');
-        }
-        return this.toOrderResponse(updatedOrder);
-      });
+          const updatedOrder = await tx.order.findUnique({
+            where: { id: order.id },
+            select: orderSelect,
+          });
+          if (!updatedOrder) {
+            throw new NotFoundException('Order was not found.');
+          }
+          return this.toOrderResponse(updatedOrder);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
     } catch (error) {
       if (
         this.hasPrismaErrorCode(error, 'P2034') &&
@@ -397,6 +416,18 @@ export class OrdersService {
       throw new NotFoundException('Order was not found.');
     }
     return this.toOrderResponse(order);
+  }
+
+  async getBuyerOrderByIdempotencyKey(
+    buyerId: string,
+    idempotencyKey: string,
+  ): Promise<OrderResponse | null> {
+    const existing = await this.findExistingOrder(buyerId, idempotencyKey);
+    if (!existing) {
+      return null;
+    }
+    const { requestHash: _requestHash, ...safeOrder } = existing;
+    return this.toOrderResponse(safeOrder);
   }
 
   private assertActiveReservationsMatchItems(

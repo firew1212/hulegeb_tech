@@ -125,6 +125,30 @@ bounded to 100 results per page. Non-empty normalized search terms are stored
 without user identifiers and aggregated with search counts and total result
 counts.
 
+## Shopping cart
+
+| Method | Path                     | Permission   | Purpose                                       |
+| :----- | :----------------------- | :----------- | :-------------------------------------------- |
+| GET    | `/cart`                  | Active buyer | View the buyer's own cart and current pricing |
+| POST   | `/cart/items`            | Active buyer | Add a catalog variant and quantity            |
+| PATCH  | `/cart/items/:variantId` | Active buyer | Set the quantity of an owned cart item        |
+| DELETE | `/cart/items/:variantId` | Active buyer | Remove an owned cart item                     |
+| POST   | `/cart/checkout`         | Active buyer | Create an order from the buyer's saved cart   |
+
+Cart operations require the authenticated buyer's bearer token. Adding an
+existing variant increments its quantity; updating a variant sets its
+quantity. Quantities follow the order limits of 1-10 per variant, and a cart can
+contain up to 20 variants. Add and update validate the current product, seller,
+variant, and stock eligibility. Cart prices are read from the current catalog
+and are never accepted from the request. Items that later become unavailable
+remain visible in the cart with `isAvailable: false`; checkout revalidates them.
+
+Cart checkout requires the same `Idempotency-Key` format as order creation. It
+uses the saved cart quantities with the existing order-pricing and stock
+validation behavior, then removes only the cart rows that still match the
+checked-out quantities. If checkout fails, cart contents remain unchanged.
+`POST /orders` remains available with its existing request-body behavior.
+
 ## Checkout
 
 | Method | Path      | Permission   | Purpose                                     |
@@ -138,7 +162,30 @@ Send `items` as an array of `{ "variantId": "<UUID>", "quantity": 1 }` entries.
 The buyer identity and prices are taken from the authenticated session and
 database, not the request body. Retrying the same key and payload returns the
 existing order; using that key with a different payload returns `409 Conflict`.
-Stock is validated during checkout but is not reserved or decremented.
+Checkout validates current stock but does not reserve or decrement it. An
+administrator must confirm stock through `POST /orders/admin/:id/confirm-stock`;
+this transaction rechecks availability, decrements inventory, and records an
+active reservation. The buyer cannot select a payment option until every order
+item has an active reservation.
+
+| Method | Path                             | Permission   | Purpose                                      |
+| :----- | :------------------------------- | :----------- | :------------------------------------------- |
+| GET    | `/orders`                        | Active buyer | List the buyer's own order history           |
+| GET    | `/orders/:id`                    | Active buyer | Get an owned order                           |
+| PATCH  | `/orders/:id/payment`            | Active buyer | Select `DEPOSIT` (50%) or `FULL`             |
+| GET    | `/orders/contact?orderId=…`      | Active buyer | Get the official contact after option choice |
+| GET    | `/orders/admin`                  | Active admin | List orders                                  |
+| GET    | `/orders/admin/:id`              | Active admin | Get an order for administration              |
+| POST   | `/orders/admin/:id/confirm-stock` | Active admin | Confirm and reserve order stock              |
+| PATCH  | `/orders/admin/:id/status`       | Active admin | Manually complete or cancel an order         |
+
+Selecting `DEPOSIT` or `FULL` returns both the final `total` and the calculated
+`paymentAmount`; a deposit is half the final total, rounded to two decimal
+places. Payment remains external: the API does not accept payment proof or
+verify payment. An order stays `PENDING` until an administrator manually
+completes it or cancels it. Cancellation releases any active reservation and
+restores inventory. Contact details are read from `HULEGEB_OFFICIAL_PHONE` and
+`HULEGEB_OFFICIAL_TELEGRAM`; both must be configured for the contact endpoint.
 
 ## Development administrator
 

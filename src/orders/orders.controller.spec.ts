@@ -380,7 +380,7 @@ describe('OrdersController HTTP endpoint', () => {
             : agent.patch(path)
       ).set('Authorization', `Bearer ${token}`);
       if (method === 'PATCH') {
-        call.send({ status: 'CONFIRMED' });
+        call.send({ status: 'COMPLETED' });
       }
 
       await call.expect(403);

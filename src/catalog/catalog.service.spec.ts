@@ -489,17 +489,20 @@ describe('CatalogService', () => {
   });
 
   it('resets product status to pending when a seller changes variant stock', async () => {
-    const transaction = vi.fn((callback: (tx: object) => unknown) =>
-      callback({
-        productVariant: {
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-          findUniqueOrThrow: vi.fn().mockResolvedValue({
-            id: 'variant-id',
-            stockQuantity: 12,
-          }),
-        },
-        product: { update: vi.fn().mockResolvedValue({}) },
-      }),
+    const reservationCount = vi.fn().mockResolvedValue(0);
+    const transaction = vi.fn(
+      (callback: (tx: object) => unknown, _options?: unknown) =>
+        callback({
+          orderStockReservation: { count: reservationCount },
+          productVariant: {
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            findUniqueOrThrow: vi.fn().mockResolvedValue({
+              id: 'variant-id',
+              stockQuantity: 12,
+            }),
+          },
+          product: { update: vi.fn().mockResolvedValue({}) },
+        }),
     );
     const productFindFirst = vi.fn().mockResolvedValue({ id: 'product-id' });
     const service = createCatalogService({
@@ -514,6 +517,12 @@ describe('CatalogService', () => {
       }),
     ).resolves.toMatchObject({ stockQuantity: 12 });
     expect(transaction).toHaveBeenCalledOnce();
+    expect(transaction.mock.calls[0][1]).toEqual({
+      isolationLevel: 'Serializable',
+    });
+    expect(reservationCount).toHaveBeenCalledWith({
+      where: { variantId: 'variant-id', releasedAt: null },
+    });
     expect(productFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'product-id', sellerId: 'seller-profile-id' },
@@ -521,11 +530,89 @@ describe('CatalogService', () => {
     );
   });
 
+  it('rejects stock edits while the variant has active order reservations', async () => {
+    const variantUpdateMany = vi.fn();
+    const productUpdate = vi.fn();
+    const reservationCount = vi.fn().mockResolvedValue(1);
+    const transaction = vi.fn((callback: (tx: object) => unknown) =>
+      callback({
+        orderStockReservation: { count: reservationCount },
+        productVariant: { updateMany: variantUpdateMany },
+        product: { update: productUpdate },
+      }),
+    );
+    const service = createCatalogService({
+      sellerProfile: sellerProfileMock(),
+      product: { findFirst: vi.fn().mockResolvedValue({ id: 'product-id' }) },
+      $transaction: transaction,
+    });
+
+    await expect(
+      service.updateVariant(sellerUser, 'product-id', 'variant-id', {
+        stockQuantity: 0,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(reservationCount).toHaveBeenCalledWith({
+      where: { variantId: 'variant-id', releasedAt: null },
+    });
+    expect(variantUpdateMany).not.toHaveBeenCalled();
+    expect(productUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not block non-stock variant edits when active reservations exist', async () => {
+    const reservationCount = vi.fn();
+    const variantUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findUniqueOrThrow = vi.fn().mockResolvedValue({
+      id: 'variant-id',
+      name: 'Updated name',
+    });
+    const transaction = vi.fn((callback: (tx: object) => unknown) =>
+      callback({
+        orderStockReservation: { count: reservationCount },
+        productVariant: { updateMany: variantUpdateMany, findUniqueOrThrow },
+        product: { update: vi.fn().mockResolvedValue({}) },
+      }),
+    );
+    const service = createCatalogService({
+      sellerProfile: sellerProfileMock(),
+      product: { findFirst: vi.fn().mockResolvedValue({ id: 'product-id' }) },
+      $transaction: transaction,
+    });
+
+    await expect(
+      service.updateVariant(sellerUser, 'product-id', 'variant-id', {
+        name: 'Updated name',
+      }),
+    ).resolves.toMatchObject({ name: 'Updated name' });
+
+    expect(reservationCount).not.toHaveBeenCalled();
+    expect(variantUpdateMany).toHaveBeenCalledOnce();
+  });
+
+  it('reports a concurrent stock reservation conflict without updating the variant', async () => {
+    const transaction = vi.fn().mockRejectedValue({ code: 'P2034' });
+    const productFindFirst = vi.fn().mockResolvedValue({ id: 'product-id' });
+    const service = createCatalogService({
+      sellerProfile: sellerProfileMock(),
+      product: { findFirst: productFindFirst },
+      $transaction: transaction,
+    });
+
+    await expect(
+      service.updateVariant(sellerUser, 'product-id', 'variant-id', {
+        stockQuantity: 12,
+      }),
+    ).rejects.toThrow('Stock changed concurrently.');
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
   it('rejects variant edits when the variant is not part of the seller product', async () => {
     const variantUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
     const productUpdate = vi.fn();
     const transaction = vi.fn((callback: (tx: object) => unknown) =>
       callback({
+        orderStockReservation: { count: vi.fn().mockResolvedValue(0) },
         productVariant: { updateMany: variantUpdateMany },
         product: { update: productUpdate },
       }),
@@ -543,7 +630,13 @@ describe('CatalogService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(variantUpdateMany).toHaveBeenCalledWith({
       where: { id: 'foreign-variant-id', productId: 'product-id' },
-      data: { stockQuantity: 4 },
+      data: {
+        name: undefined,
+        attributes: undefined,
+        price: undefined,
+        stockQuantity: 4,
+        isActive: undefined,
+      },
     });
     expect(productUpdate).not.toHaveBeenCalled();
   });

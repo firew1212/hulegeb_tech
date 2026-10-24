@@ -14,6 +14,7 @@ import { SellersModule } from './sellers/sellers.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
+import { CartModule } from './cart/cart.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -34,6 +35,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     SellersModule,
     CatalogModule,
     OrdersModule,
+    CartModule,
     NotificationsModule,
   ],
   controllers: [AppController],
