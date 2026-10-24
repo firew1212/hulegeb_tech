@@ -371,9 +371,14 @@ describe('OrdersController HTTP endpoint', () => {
   ])(
     'denies non-admin access to admin order routes (%s %s %s)',
     async (token, method, path) => {
-      const call = request(app.getHttpServer())
-        [method.toLowerCase()](path)
-        .set('Authorization', `Bearer ${token}`);
+      const agent = request(app.getHttpServer());
+      const call = (
+        method === 'GET'
+          ? agent.get(path)
+          : method === 'POST'
+            ? agent.post(path)
+            : agent.patch(path)
+      ).set('Authorization', `Bearer ${token}`);
       if (method === 'PATCH') {
         call.send({ status: 'CONFIRMED' });
       }
@@ -391,9 +396,14 @@ describe('OrdersController HTTP endpoint', () => {
     ['POST', '/orders/admin/not-a-uuid/confirm-stock'],
     ['PATCH', '/orders/admin/not-a-uuid/status'],
   ])('rejects invalid admin order IDs (%s %s)', async (method, path) => {
-    const call = request(app.getHttpServer())
-      [method.toLowerCase()](path)
-      .set('Authorization', 'Bearer admin-token');
+    const agent = request(app.getHttpServer());
+    const call = (
+      method === 'GET'
+        ? agent.get(path)
+        : method === 'POST'
+          ? agent.post(path)
+          : agent.patch(path)
+    ).set('Authorization', 'Bearer admin-token');
     if (method === 'PATCH') {
       call.send({ status: 'CONFIRMED' });
     }
@@ -694,27 +704,30 @@ describe('OrdersController HTTP endpoint', () => {
     ['', 'empty'],
     ['has spaces', 'invalid format'],
     ['a'.repeat(256), 'too long'],
-  ])('requires a valid Idempotency-Key header (%s)', async (key) => {
-    const call = request(app.getHttpServer())
-      .post('/orders')
-      .set('Authorization', 'Bearer buyer-token');
-    if (key !== undefined) {
-      call.set('Idempotency-Key', key);
-    }
+  ])(
+    'requires a valid Idempotency-Key header (%s)',
+    async (key, _description) => {
+      const call = request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', 'Bearer buyer-token');
+      if (key !== undefined) {
+        call.set('Idempotency-Key', key);
+      }
 
-    await call
-      .send({
-        items: [
-          {
-            variantId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
-            quantity: 1,
-          },
-        ],
-      })
-      .expect(400);
+      await call
+        .send({
+          items: [
+            {
+              variantId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+              quantity: 1,
+            },
+          ],
+        })
+        .expect(400);
 
-    expect(createOrder).not.toHaveBeenCalled();
-  });
+      expect(createOrder).not.toHaveBeenCalled();
+    },
+  );
 
   it('preserves idempotency conflicts and unavailable-product validation errors', async () => {
     createOrder.mockRejectedValueOnce(

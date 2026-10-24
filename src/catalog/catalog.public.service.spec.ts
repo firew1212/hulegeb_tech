@@ -46,7 +46,7 @@ describe('CatalogService public product listings', () => {
     const { service, transaction } = createCatalogService(findMany, count);
 
     await expect(
-      service.listPublicProducts({ page: 2, limit: 10 }),
+      service.listPublicProducts({ page: 2, limit: 10, sort: 'newest' }),
     ).resolves.toEqual({
       data: products,
       page: 2,
@@ -268,6 +268,7 @@ describe('CatalogService public product listings', () => {
         limit: 20,
         minPrice: 20,
         maxPrice: 10,
+        sort: 'newest',
       }),
     ).rejects.toMatchObject({ status: 400 });
     expect(transaction).not.toHaveBeenCalled();

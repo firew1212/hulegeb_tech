@@ -69,6 +69,15 @@ enum AuthChallengeType {
   ADMIN_LOGIN_MFA
 }
 
+enum NotificationType {
+  SELLER_APPLICATION_APPROVED
+  SELLER_APPLICATION_REJECTED
+  PRODUCT_APPROVED
+  PRODUCT_REJECTED
+  ORDER_CANCELLED
+  ORDER_COMPLETED
+}
+
 // ---------- USERS AND ACCESS ----------
 
 model User {
@@ -91,6 +100,7 @@ model User {
   authChallenges  AuthChallenge[]
   authSessions    AuthSession[]
   authAuditEvents AuthAuditEvent[]
+  notifications  Notification[]
   orders          Order[]
 
   @@index([status])
@@ -111,6 +121,20 @@ model AuthChallenge {
 
   @@index([userId, type, createdAt])
   @@index([expiresAt])
+}
+
+model Notification {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String           @db.Uuid
+  type       NotificationType
+  resourceId String?          @db.Uuid
+  createdAt  DateTime         @default(now())
+  readAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt, id])
+  @@index([userId, readAt, createdAt, id])
 }
 
 model AuthSession {

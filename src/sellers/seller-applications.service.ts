@@ -60,6 +60,14 @@ export class SellerApplicationsService {
         );
       }
 
+      await tx.notification.create({
+        data: {
+          type: 'SELLER_APPLICATION_APPROVED',
+          userId: application.userId,
+          resourceId: application.id,
+        },
+      });
+
       const sellerRole = await tx.role.upsert({
         where: { code: 'SELLER' },
         update: {},
@@ -99,7 +107,7 @@ export class SellerApplicationsService {
     return this.prisma.$transaction(async (tx) => {
       const application = await tx.sellerProfile.findUnique({
         where: { id: applicationId },
-        select: { id: true, status: true },
+        select: { id: true, userId: true, status: true },
       });
       if (!application) {
         throw new NotFoundException('Seller application not found.');
@@ -119,6 +127,14 @@ export class SellerApplicationsService {
           'Seller application status has changed.',
         );
       }
+
+      await tx.notification.create({
+        data: {
+          type: 'SELLER_APPLICATION_REJECTED',
+          userId: application.userId,
+          resourceId: application.id,
+        },
+      });
 
       return tx.sellerProfile.findUniqueOrThrow({
         where: { id: application.id },
