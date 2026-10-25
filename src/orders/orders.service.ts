@@ -418,6 +418,18 @@ export class OrdersService {
     return this.toOrderResponse(order);
   }
 
+  async getBuyerOrderByIdempotencyKey(
+    buyerId: string,
+    idempotencyKey: string,
+  ): Promise<OrderResponse | null> {
+    const existing = await this.findExistingOrder(buyerId, idempotencyKey);
+    if (!existing) {
+      return null;
+    }
+    const { requestHash: _requestHash, ...safeOrder } = existing;
+    return this.toOrderResponse(safeOrder);
+  }
+
   private assertActiveReservationsMatchItems(
     items: { variantId: string | null; quantity: number }[],
     reservations: { variantId: string; quantity: number }[],

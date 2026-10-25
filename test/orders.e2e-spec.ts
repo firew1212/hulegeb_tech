@@ -13,6 +13,7 @@ import { AuthorizationModule } from '../src/authorization/authorization.module.j
 import { RolesGuard } from '../src/authorization/roles.guard.js';
 import { CatalogModule } from '../src/catalog/catalog.module.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
+import { CartModule } from '../src/cart/cart.module.js';
 import { OrdersService } from '../src/orders/orders.service.js';
 import { OrdersModule } from '../src/orders/orders.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
@@ -26,6 +27,7 @@ import { configureAuthTestDatabase } from './auth-test-database.guard.js';
     AuthorizationModule,
     CatalogModule,
     OrdersModule,
+    CartModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
@@ -44,12 +46,14 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
   let fixture:
     | {
         buyerId?: string;
+        otherBuyerId?: string;
         sellerUserId?: string;
         sellerProfileId?: string;
         categoryId?: string;
         productId?: string;
         idempotencyKey: string;
         token?: string;
+        otherToken?: string;
         variantIds?: string[];
       }
     | undefined;
@@ -106,6 +110,18 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
       select: { id: true },
     });
     fixture.buyerId = buyer.id;
+    const otherBuyer = await prisma.user.create({
+      data: {
+        email: `orders-e2e-other-buyer-${fixtureId}@example.test`,
+        passwordHash: 'not-used-by-this-test',
+        firstName: 'Other',
+        lastName: 'Buyer',
+        status: 'ACTIVE',
+        userRoles: { create: { roleId: buyerRole.id } },
+      },
+      select: { id: true },
+    });
+    fixture.otherBuyerId = otherBuyer.id;
     const sellerUser = await prisma.user.create({
       data: {
         email: `orders-e2e-seller-${fixtureId}@example.test`,
@@ -177,6 +193,17 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
     });
 
     fixture.token = await jwt.signAsync({ sub: buyer.id, sid: session.id });
+    const otherSession = await prisma.authSession.create({
+      data: {
+        userId: otherBuyer.id,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      },
+      select: { id: true },
+    });
+    fixture.otherToken = await jwt.signAsync({
+      sub: otherBuyer.id,
+      sid: otherSession.id,
+    });
     fixture.variantIds = product.variants.map(({ id }) => id);
   });
 
@@ -220,6 +247,7 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
       }
       const userIds = [
         currentFixture.buyerId,
+        currentFixture.otherBuyerId,
         currentFixture.sellerUserId,
       ].filter((userId): userId is string => userId !== undefined);
       if (userIds.length > 0) {
@@ -244,6 +272,31 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
       .set('Authorization', `Bearer ${fixture.token}`)
       .set('Idempotency-Key', idempotencyKey)
       .send({ items: [{ variantId, quantity: 1 }] });
+  }
+
+  function authenticatedRequest(token?: string) {
+    const accessToken = token ?? fixture?.token;
+    if (!accessToken) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+    return {
+      get: (path: string) =>
+        request(app.getHttpServer())
+          .get(path)
+          .set('Authorization', `Bearer ${accessToken}`),
+      post: (path: string) =>
+        request(app.getHttpServer())
+          .post(path)
+          .set('Authorization', `Bearer ${accessToken}`),
+      patch: (path: string) =>
+        request(app.getHttpServer())
+          .patch(path)
+          .set('Authorization', `Bearer ${accessToken}`),
+      delete: (path: string) =>
+        request(app.getHttpServer())
+          .delete(path)
+          .set('Authorization', `Bearer ${accessToken}`),
+    };
   }
 
   async function expectOneOrderForKey(idempotencyKey: string) {
@@ -279,6 +332,180 @@ describe('Order and inventory integrity (PostgreSQL)', () => {
       data: { stockQuantity },
     });
   }
+
+  it('keeps cart operations scoped to the authenticated buyer', async () => {
+    const variantId = fixture?.variantIds?.[0];
+    if (!variantId || !fixture?.otherToken) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+
+    const added = await authenticatedRequest()
+      .post('/cart/items')
+      .send({ variantId, quantity: 2 });
+    expect(added.status).toBe(201);
+    expect(added.body.items).toHaveLength(1);
+    expect(added.body.items[0]).toMatchObject({
+      variantId,
+      quantity: 2,
+      unitPrice: '12.50',
+      lineTotal: '25.00',
+      isAvailable: true,
+    });
+    expect(added.body.total).toBe('25.00');
+
+    const otherCart = await authenticatedRequest(fixture.otherToken).get(
+      '/cart',
+    );
+    expect(otherCart.status).toBe(200);
+    expect(otherCart.body).toEqual({ items: [], total: '0.00' });
+    await expect(
+      authenticatedRequest(fixture.otherToken)
+        .patch(`/cart/items/${variantId}`)
+        .send({ quantity: 3 }),
+    ).resolves.toMatchObject({ status: 404 });
+
+    const otherRemoval = await authenticatedRequest(fixture.otherToken).delete(
+      `/cart/items/${variantId}`,
+    );
+    expect(otherRemoval.status).toBe(200);
+    expect(otherRemoval.body.items).toEqual([]);
+    await expect(authenticatedRequest().get('/cart')).resolves.toMatchObject({
+      body: { items: [expect.objectContaining({ variantId, quantity: 2 })] },
+    });
+  });
+
+  it('adds, updates, and removes valid cart items', async () => {
+    const variantId = fixture?.variantIds?.[0];
+    if (!variantId) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+    const firstAdd = await authenticatedRequest()
+      .post('/cart/items')
+      .send({ variantId, quantity: 1 });
+    expect(firstAdd.status).toBe(201);
+    const secondAdd = await authenticatedRequest()
+      .post('/cart/items')
+      .send({ variantId, quantity: 2 });
+    expect(secondAdd.body.items).toHaveLength(1);
+    expect(secondAdd.body.items[0].quantity).toBe(3);
+
+    const updated = await authenticatedRequest()
+      .patch(`/cart/items/${variantId}`)
+      .send({ quantity: 4 });
+    expect(updated.status).toBe(200);
+    expect(updated.body.items[0]).toMatchObject({
+      quantity: 4,
+      lineTotal: '50.00',
+    });
+
+    const removed = await authenticatedRequest().delete(
+      `/cart/items/${variantId}`,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ items: [], total: '0.00' });
+  });
+
+  it('rejects invalid quantities, variants, and insufficient stock', async () => {
+    const variantId = fixture?.variantIds?.[0];
+    if (!variantId) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+    await expect(
+      authenticatedRequest()
+        .post('/cart/items')
+        .send({ variantId, quantity: 0 }),
+    ).resolves.toMatchObject({ status: 400 });
+    await expect(
+      authenticatedRequest()
+        .post('/cart/items')
+        .send({ variantId, quantity: 11 }),
+    ).resolves.toMatchObject({ status: 400 });
+    await expect(
+      authenticatedRequest()
+        .post('/cart/items')
+        .send({ variantId, quantity: 1, unitPrice: 0 }),
+    ).resolves.toMatchObject({ status: 400 });
+    await expect(
+      authenticatedRequest()
+        .post('/cart/items')
+        .send({ variantId: randomUUID(), quantity: 1 }),
+    ).resolves.toMatchObject({ status: 400 });
+
+    await setVariantStock(variantId, 1);
+    await expect(
+      authenticatedRequest()
+        .post('/cart/items')
+        .send({ variantId, quantity: 2 }),
+    ).resolves.toMatchObject({ status: 400 });
+  });
+
+  it('shows unavailable saved items and rejects them at checkout', async () => {
+    const variantId = fixture?.variantIds?.[0];
+    const productId = fixture?.productId;
+    if (!variantId || !productId) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+    await authenticatedRequest()
+      .post('/cart/items')
+      .send({ variantId, quantity: 1 });
+    await prisma.product.update({
+      where: { id: productId },
+      data: { status: 'UNAVAILABLE' },
+    });
+
+    const cart = await authenticatedRequest().get('/cart');
+    expect(cart.body.items[0].isAvailable).toBe(false);
+    const checkout = await authenticatedRequest()
+      .post('/cart/checkout')
+      .set('Idempotency-Key', `${fixture!.idempotencyKey}-unavailable`)
+      .send();
+    expect(checkout.status).toBe(400);
+    expect((await authenticatedRequest().get('/cart')).body.items).toHaveLength(
+      1,
+    );
+  });
+
+  it('creates an order from server-priced cart items and clears checked-out items', async () => {
+    const variantId = fixture?.variantIds?.[0];
+    if (!variantId || !fixture) {
+      throw new Error('Order e2e fixture was not initialized.');
+    }
+    await authenticatedRequest()
+      .post('/cart/items')
+      .send({ variantId, quantity: 2 });
+
+    const idempotencyKey = `${fixture.idempotencyKey}-cart-checkout`;
+    const checkout = await authenticatedRequest()
+      .post('/cart/checkout')
+      .set('Idempotency-Key', idempotencyKey)
+      .send({
+        total: 0,
+        items: [{ variantId, quantity: 99, unitPrice: 0 }],
+      });
+    expect(checkout.status).toBe(201);
+    expect(Number(checkout.body.total)).toBe(25);
+    expect(checkout.body.items).toHaveLength(1);
+    expect(checkout.body.items[0]).toMatchObject({
+      variantId,
+      quantity: 2,
+    });
+    expect(
+      await prisma.order.count({
+        where: { buyerId: fixture.buyerId, idempotencyKey },
+      }),
+    ).toBe(1);
+    expect((await authenticatedRequest().get('/cart')).body).toEqual({
+      items: [],
+      total: '0.00',
+    });
+
+    const retry = await authenticatedRequest()
+      .post('/cart/checkout')
+      .set('Idempotency-Key', idempotencyKey)
+      .send();
+    expect(retry.status).toBe(201);
+    expect(retry.body).toEqual(checkout.body);
+  });
 
   it('returns one consistent order for concurrent retries with the same payload', async () => {
     if (!fixture?.variantIds) {
