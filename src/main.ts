@@ -1,11 +1,14 @@
+import 'dotenv/config';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule, ObserveInstrument } from './app.module.js';
+import { hasObserveOptions } from './config/environment.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
-    instrument: ObserveInstrument,
-  });
+  const options = hasObserveOptions()
+    ? { instrument: ObserveInstrument }
+    : {};
+  const app = await NestFactory.create(AppModule, options);
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,

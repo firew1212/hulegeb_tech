@@ -247,22 +247,18 @@ $ pnpm run test:cov
 
 ## Deployment
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+The SRS does not select a hosting provider. Use the production configuration
+instructions below and the documentation for the platform selected by the
+deployment operator.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+No cloud provider is preconfigured or assumed by this backend.
 
 ## Observability
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+Observability is optional and enabled only when all required service credentials
+are explicitly provided through the environment.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+[NestJS Observe](https://observe.nestjs.com) can be configured for this backend:
 
 - **Distributed tracing:** Follow requests across services and understand how they flow through your system.
 - **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
@@ -273,9 +269,77 @@ In production applications, observability is essential for understanding how you
 - **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
 - **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
 
-This project is already instrumented. Create a free account at [observe.nestjs.com](https://observe.nestjs.com), add an application, and paste the generated app key and secret into the `ObserveModule.forRoot()` call in `src/app.module.ts`.
+Observe is optional: leave `OBSERVE_APP_KEY`, `OBSERVE_APP_SECRET`, and
+`OBSERVE_SERVICE_ID` unset to disable it, or configure all three through the
+deployment environment. Do not put provider credentials in source code.
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
+## Production configuration and deployment
+
+The approved SRS 1.2 does not select a hosting provider or prescribe a
+deployment/migration workflow. It does require external providers to be
+explicitly approved and configured; this backend does not assume a default
+provider. Configure secrets through the deployment platform's secret manager,
+not source control, image build arguments, or command-line arguments.
+
+Before starting the production service, provide these environment variables:
+
+| Variable | Production requirement |
+| :--- | :--- |
+| `NODE_ENV` | Exactly `production`. |
+| `DATABASE_URL` | PostgreSQL URL for a remote production database. Local hosts and database names containing a development, test, staging, or QA marker are rejected. |
+| `JWT_ACCESS_SECRET`, `AUTH_CHALLENGE_SECRET` | Independent cryptographically random secrets, each at least 32 characters with at least 12 distinct characters; placeholders and identical values are rejected. |
+| `AUTH_EMAIL_MODE`, `BREVO_API_KEY`, `AUTH_EMAIL_FROM`, `FRONTEND_URL` | Set the mode to `brevo`; provide a non-placeholder provider key of at least 16 characters, valid sender email, and HTTPS frontend URL. |
+| `AUTH_SMS_MODE`, `AUTH_SMS_WEBHOOK_URL`, `AUTH_DELIVERY_WEBHOOK_TOKEN` | Set the mode to `webhook`; provide an HTTPS endpoint and an independently generated non-placeholder token of at least 32 characters with at least 12 distinct characters. |
+| `HULEGEB_OFFICIAL_PHONE`, `HULEGEB_OFFICIAL_TELEGRAM` | Set the approved phone in E.164 format and an `@username` or HTTPS `t.me` URL. |
+| `PORT` | Optional; if set, use a valid port number. |
+
+Production startup rejects missing or unsafe required settings before the app
+starts. Console email/SMS delivery is development/test-only and is rejected in
+production. `AUTH_OTP_MAX_ATTEMPTS` remains optional and defaults to five.
+
+The NestJS Observe integration is optional. Leave
+`OBSERVE_APP_KEY`, `OBSERVE_APP_SECRET`, and `OBSERVE_SERVICE_ID` all unset to
+disable it. To enable it, set all three to values issued for the service; partial
+or placeholder values are rejected. Do not commit provider credentials.
+
+After setting the production environment and verifying the database target
+independently, run these commands from `back-end` as the authorized deployment
+operator:
+
+```bash
+pnpm exec prisma migrate deploy
+pnpm exec prisma generate
+pnpm run build
+pnpm start:prod
+```
+
+`migrate deploy` applies migrations and should only be run by the deployment
+operator after checking the configured target. The application and provisioning
+commands do not reset a database.
+
+## Production administrator provisioning
+
+The public registration endpoint creates buyers only; it does not accept a role
+or assign administrator access. Provision the initial administrator using a
+trusted one-off production task after the database migrations have been applied:
+
+```bash
+pnpm db:provision:admin
+```
+
+Set `NODE_ENV=production` and `DATABASE_URL` in the task's protected environment.
+The command rejects local databases and database names marked development, test,
+staging, or QA. Before connecting, it requires an interactive operator to type
+the exact production database name, host, and port shown by the command. It then
+checks the connected PostgreSQL database name and port before asking for the
+administrator details. Enter the password twice in the hidden terminal prompt;
+never pass it as an argument or environment variable.
+
+The account is created as `PENDING_VERIFICATION`, and the command does not
+change an existing account, log credentials, migrate, or reset the database.
+Complete the configured email and phone verification flows before signing in;
+administrator phone MFA remains required. `pnpm db:seed:admin` is development
+only and rejects production database targets.
 
 ## Resources
 

@@ -135,3 +135,27 @@ export async function promptForAdminInput(): Promise<AdminProvisioningInput> {
 
   return validateAdminInput({ firstName, lastName, email, phone, password });
 }
+
+export async function confirmProductionDatabaseTarget(
+  target: URL,
+): Promise<void> {
+  if (!stdin.isTTY || !stdout.isTTY) {
+    throw new AdminProvisioningError(
+      'Production admin provisioning requires an interactive local terminal.',
+    );
+  }
+
+  const databaseName = decodeURIComponent(
+    target.pathname.replace(/^\/+/, ''),
+  );
+  const targetDescription = `PRODUCTION DATABASE ${databaseName} at ${target.hostname}:${target.port || '5432'}`;
+  const confirmation = await promptText(
+    `Type "${targetDescription}" to continue: `,
+  );
+
+  if (confirmation.trim() !== targetDescription) {
+    throw new AdminProvisioningError(
+      'Production database target confirmation did not match.',
+    );
+  }
+}
