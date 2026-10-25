@@ -30,7 +30,7 @@ function pendingProduct(overrides: object = {}) {
     titleAm: 'ምርት',
     status: 'PENDING_APPROVAL',
     category: { isActive: true },
-    seller: { status: 'APPROVED' },
+    seller: { status: 'APPROVED', user: { id: 'seller-user-id' } },
     ...overrides,
   };
 }
@@ -79,8 +79,10 @@ describe('CatalogService product moderation', () => {
       ...pendingProduct(),
       status: 'APPROVED',
     });
+    const createNotification = vi.fn().mockResolvedValue({});
     const { service, transaction } = createCatalogService({
       product: { findUnique, updateMany, findUniqueOrThrow },
+      notification: { create: createNotification },
     });
 
     await expect(service.approveProduct('product-id')).resolves.toMatchObject({
@@ -96,6 +98,13 @@ describe('CatalogService product moderation', () => {
         seller: expect.any(Object),
         category: expect.any(Object),
       }),
+    });
+    expect(createNotification).toHaveBeenCalledWith({
+      data: {
+        type: 'PRODUCT_APPROVED',
+        userId: 'seller-user-id',
+        resourceId: 'product-id',
+      },
     });
     expect(transaction).toHaveBeenCalledOnce();
   });
@@ -212,14 +221,17 @@ describe('CatalogService product moderation', () => {
     const findUnique = vi.fn().mockResolvedValue({
       id: 'product-id',
       status: 'PENDING_APPROVAL',
+      seller: { user: { id: 'seller-user-id' } },
     });
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const findUniqueOrThrow = vi.fn().mockResolvedValue({
       id: 'product-id',
       status: 'REJECTED',
     });
+    const createNotification = vi.fn().mockResolvedValue({});
     const { service } = createCatalogService({
       product: { findUnique, updateMany, findUniqueOrThrow },
+      notification: { create: createNotification },
     });
 
     await expect(service.rejectProduct('product-id')).resolves.toMatchObject({
@@ -228,6 +240,13 @@ describe('CatalogService product moderation', () => {
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: 'product-id', status: 'PENDING_APPROVAL' },
       data: { status: 'REJECTED' },
+    });
+    expect(createNotification).toHaveBeenCalledWith({
+      data: {
+        type: 'PRODUCT_REJECTED',
+        userId: 'seller-user-id',
+        resourceId: 'product-id',
+      },
     });
   });
 

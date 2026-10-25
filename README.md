@@ -138,7 +138,30 @@ Send `items` as an array of `{ "variantId": "<UUID>", "quantity": 1 }` entries.
 The buyer identity and prices are taken from the authenticated session and
 database, not the request body. Retrying the same key and payload returns the
 existing order; using that key with a different payload returns `409 Conflict`.
-Stock is validated during checkout but is not reserved or decremented.
+Checkout validates current stock but does not reserve or decrement it. An
+administrator must confirm stock through `POST /orders/admin/:id/confirm-stock`;
+this transaction rechecks availability, decrements inventory, and records an
+active reservation. The buyer cannot select a payment option until every order
+item has an active reservation.
+
+| Method | Path                             | Permission   | Purpose                                      |
+| :----- | :------------------------------- | :----------- | :------------------------------------------- |
+| GET    | `/orders`                        | Active buyer | List the buyer's own order history           |
+| GET    | `/orders/:id`                    | Active buyer | Get an owned order                           |
+| PATCH  | `/orders/:id/payment`            | Active buyer | Select `DEPOSIT` (50%) or `FULL`             |
+| GET    | `/orders/contact?orderId=…`      | Active buyer | Get the official contact after option choice |
+| GET    | `/orders/admin`                  | Active admin | List orders                                  |
+| GET    | `/orders/admin/:id`              | Active admin | Get an order for administration              |
+| POST   | `/orders/admin/:id/confirm-stock` | Active admin | Confirm and reserve order stock              |
+| PATCH  | `/orders/admin/:id/status`       | Active admin | Manually complete or cancel an order         |
+
+Selecting `DEPOSIT` or `FULL` returns both the final `total` and the calculated
+`paymentAmount`; a deposit is half the final total, rounded to two decimal
+places. Payment remains external: the API does not accept payment proof or
+verify payment. An order stays `PENDING` until an administrator manually
+completes it or cancels it. Cancellation releases any active reservation and
+restores inventory. Contact details are read from `HULEGEB_OFFICIAL_PHONE` and
+`HULEGEB_OFFICIAL_TELEGRAM`; both must be configured for the contact endpoint.
 
 ## Development administrator
 

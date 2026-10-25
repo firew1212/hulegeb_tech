@@ -296,7 +296,10 @@ function createStockConfirmationService(options?: {
     orderStockReservation: { create: createReservation },
   };
   const transaction = vi.fn(
-    async (callback: (transaction: typeof tx) => Promise<unknown>) => {
+    async (
+      callback: (transaction: typeof tx) => Promise<unknown>,
+      _options?: unknown,
+    ) => {
       const inventorySnapshot = new Map(inventory);
       const reservationSnapshot = [...reservations];
       try {
@@ -383,6 +386,9 @@ function createOrderWorkflowService(options?: {
         id: order.id,
         ...('buyerId' in select ? { buyerId: order.buyerId } : {}),
         status: order.status,
+        ...('paymentOption' in select
+          ? { paymentOption: order.paymentOption }
+          : {}),
         ...('total' in select ? { total: order.total } : {}),
         ...('items' in select ? { items } : {}),
         stockReservations: reservations.filter(
@@ -637,6 +643,7 @@ describe('OrdersService admin order management', () => {
         id: true,
         buyerId: true,
         status: true,
+        paymentOption: true,
         stockReservations: {
           where: { releasedAt: null },
           select: { id: true, variantId: true, quantity: true },
@@ -712,7 +719,17 @@ describe('OrdersService admin order management', () => {
         id: safeReadOrder.id,
         buyerId,
         status: 'PENDING',
-        stockReservations: [],
+        paymentOption: 'FULL',
+        stockReservations:
+          status === 'COMPLETED'
+            ? [
+                {
+                  id: 'reservation-one',
+                  variantId: variantOne,
+                  quantity: 2,
+                },
+              ]
+            : [],
       });
       const updateMany = vi.fn().mockResolvedValue({ count: 0 });
       const notificationCreate = vi.fn();
@@ -826,6 +843,47 @@ describe('OrdersService.confirmAdminOrderStock', () => {
     expect(context.reservations).toEqual([
       { variantId: variantOne, quantity: 2, releasedAt: null },
     ]);
+  });
+
+  it('rejects completion when no active stock reservation exists', async () => {
+    const context = createOrderWorkflowService({
+      paymentOption: 'FULL',
+      reservations: [],
+    });
+
+    await expect(
+      context.service.updateAdminOrderStatus(safeReadOrder.id, 'COMPLETED'),
+    ).rejects.toThrow('Stock must be actively reserved');
+
+    expect(context.order.status).toBe('PENDING');
+    expect(context.updateOrderMany).not.toHaveBeenCalled();
+    expect(context.notifications).toHaveLength(0);
+  });
+
+  it('rejects completion when no payment option has been selected', async () => {
+    const context = createOrderWorkflowService({ paymentOption: null });
+
+    await expect(
+      context.service.updateAdminOrderStatus(safeReadOrder.id, 'COMPLETED'),
+    ).rejects.toThrow('A payment option must be selected');
+
+    expect(context.order.status).toBe('PENDING');
+    expect(context.updateOrderMany).not.toHaveBeenCalled();
+    expect(context.notifications).toHaveLength(0);
+  });
+
+  it('does not repeat completion side effects for an already completed order', async () => {
+    const context = createOrderWorkflowService({
+      status: 'COMPLETED',
+      paymentOption: 'FULL',
+    });
+
+    await expect(
+      context.service.updateAdminOrderStatus(safeReadOrder.id, 'COMPLETED'),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(context.updateOrderMany).not.toHaveBeenCalled();
+    expect(context.notifications).toHaveLength(0);
   });
 
   it('rejects an order item whose product variant no longer exists', async () => {
@@ -1003,7 +1061,7 @@ describe('OrdersService.selectBuyerPaymentOption', () => {
 
 describe('OrdersService order completion and cancellation', () => {
   it('manually completes an order without releasing reserved stock', async () => {
-    const context = createOrderWorkflowService();
+    const context = createOrderWorkflowService({ paymentOption: 'DEPOSIT' });
 
     const completed = await context.service.updateAdminOrderStatus(
       safeReadOrder.id,
@@ -1014,6 +1072,9 @@ describe('OrdersService order completion and cancellation', () => {
     expect(context.inventory.get(variantOne)).toBe(1);
     expect(context.reservations[0].releasedAt).toBeNull();
     expect(context.updateVariantMany).not.toHaveBeenCalled();
+    expect(context.transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'Serializable',
+    });
     expect(context.notifications).toEqual([
       {
         type: 'ORDER_COMPLETED',

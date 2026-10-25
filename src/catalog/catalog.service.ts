@@ -700,31 +700,55 @@ export class CatalogService {
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const updated = await tx.productVariant.updateMany({
-          where: { id: variantId, productId: product.id },
-          data: {
-            name: input.name,
-            attributes: input.attributes,
-            price: input.price,
-            stockQuantity: input.stockQuantity,
-            isActive: input.isActive,
-          },
-        });
-        if (updated.count !== 1) {
-          throw new NotFoundException('Product variant not found.');
-        }
-        await tx.product.update({
-          where: { id: product.id },
-          data: { status: 'PENDING_APPROVAL' },
-        });
-        return tx.productVariant.findUniqueOrThrow({
-          where: { id: variantId },
-        });
-      });
+      return await this.prisma.$transaction(
+        async (tx) => {
+          if (input.stockQuantity !== undefined) {
+            const activeReservations = await tx.orderStockReservation.count({
+              where: { variantId, releasedAt: null },
+            });
+            if (activeReservations > 0) {
+              throw new ConflictException(
+                'Stock cannot be changed while active order reservations exist.',
+              );
+            }
+          }
+
+          const updated = await tx.productVariant.updateMany({
+            where: { id: variantId, productId: product.id },
+            data: {
+              name: input.name,
+              attributes: input.attributes,
+              price: input.price,
+              stockQuantity: input.stockQuantity,
+              isActive: input.isActive,
+            },
+          });
+          if (updated.count !== 1) {
+            throw new NotFoundException('Product variant not found.');
+          }
+          await tx.product.update({
+            where: { id: product.id },
+            data: { status: 'PENDING_APPROVAL' },
+          });
+          return tx.productVariant.findUniqueOrThrow({
+            where: { id: variantId },
+          });
+        },
+        input.stockQuantity === undefined
+          ? undefined
+          : { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
         throw new ConflictException('A product variant with this SKU exists.');
+      }
+      if (
+        input.stockQuantity !== undefined &&
+        this.isSerializationConflictError(error)
+      ) {
+        throw new ConflictException(
+          'Stock changed concurrently. Reload the product and try again.',
+        );
       }
       throw error;
     }
@@ -889,6 +913,15 @@ export class CatalogService {
       error !== null &&
       'code' in error &&
       error.code === 'P2002'
+    );
+  }
+
+  private isSerializationConflictError(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'P2034'
     );
   }
 }
