@@ -53,4 +53,26 @@ describe('category seed data', () => {
       }),
     );
   });
+
+  it('can seed missing categories without overwriting existing category records', async () => {
+    const upsert = vi.fn(async ({ where }: { where: { slug: string } }) => ({
+      id: `id-${where.slug}`,
+    }));
+
+    await seedCategories({ category: { upsert } }, { preserveExisting: true });
+
+    expect(upsert).toHaveBeenCalledTimes(18);
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { slug: 'electronics-accessories' },
+        update: {},
+      }),
+    );
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { slug: 'mobile-phones-accessories' },
+        update: {},
+      }),
+    );
+  });
 });

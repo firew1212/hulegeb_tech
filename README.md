@@ -293,6 +293,10 @@ Before starting the production service, provide these environment variables:
 | `HULEGEB_OFFICIAL_PHONE`, `HULEGEB_OFFICIAL_TELEGRAM` | Set the approved phone in E.164 format and an `@username` or HTTPS `t.me` URL. |
 | `PORT` | Optional; if set, use a valid port number. |
 
+Startup rejects a missing or unsupported `NODE_ENV`; only `development`,
+`test`, and `production` are accepted, so production validation cannot be
+skipped by omitting the environment mode.
+
 Production startup rejects missing or unsafe required settings before the app
 starts. Console email/SMS delivery is development/test-only and is rejected in
 production. `AUTH_OTP_MAX_ATTEMPTS` remains optional and defaults to five.
@@ -368,3 +372,38 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+# Local development sample data
+
+The default `pnpm db:seed` command remains unchanged: it seeds the roles and
+categories. To add repeatable sample buyers, approved seller profiles, and
+products, run the separate command below from `back-end` in a local development
+environment:
+
+```powershell
+$env:NODE_ENV = 'development'
+$env:SAMPLE_SEED_PASSWORD = Read-Host "Enter a local-only password (12+ characters)"
+pnpm db:seed:sample
+Remove-Item Env:SAMPLE_SEED_PASSWORD
+Remove-Item Env:NODE_ENV
+```
+
+The sample command refuses to run unless `NODE_ENV=development`,
+`DATABASE_URL` targets `127.0.0.1:5433/hulegeb_dev`, and the connected
+PostgreSQL identity matches that development database. It does not reset or
+clear data. Sample records use stable `.test` email addresses and SKU/slug
+identifiers; existing records are left unchanged on reruns.
+
+Newly created sample accounts use the password supplied through
+`SAMPLE_SEED_PASSWORD`; reruns preserve any existing account credentials:
+
+- `sample.buyer.one@example.test` — buyer
+- `sample.buyer.two@example.test` — buyer
+- `sample.seller.individual@example.test` — individual seller
+- `sample.seller.business@example.test` — business seller
+
+These credentials and accounts are for local development only. Sample users
+remain `PENDING_VERIFICATION` with no verification timestamps, so the existing
+authentication flow will not allow login until normal verification activates
+the account. Sample products are `PENDING_APPROVAL`; they are not made public
+by bypassing product moderation. Do not reuse the supplied local-only password
+for any real account or environment.

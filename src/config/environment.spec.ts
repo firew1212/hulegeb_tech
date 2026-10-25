@@ -72,6 +72,15 @@ describe('production environment validation', () => {
       expect(() => validateEnvironment({ NODE_ENV })).not.toThrow();
     }
   });
+
+  it.each([undefined, '', 'staging'])(
+    'rejects missing or unsupported NODE_ENV: %s',
+    (NODE_ENV) => {
+      expect(() => validateEnvironment({ NODE_ENV })).toThrow(
+        /NODE_ENV must be explicitly set/,
+      );
+    },
+  );
 });
 
 describe('optional observability configuration', () => {

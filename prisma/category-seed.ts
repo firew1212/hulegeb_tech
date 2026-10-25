@@ -108,12 +108,14 @@ interface CategoryUpsertClient {
   category: {
     upsert(args: {
       where: { slug: string };
-      update: {
-        parentId: string | null;
-        nameEn: string;
-        nameAm: string;
-        sortOrder: number;
-      };
+      update:
+        | {
+            parentId: string | null;
+            nameEn: string;
+            nameAm: string;
+            sortOrder: number;
+          }
+        | Record<string, never>;
       create: {
         slug: string;
         parentId: string | null;
@@ -126,16 +128,22 @@ interface CategoryUpsertClient {
   };
 }
 
-export async function seedCategories(prisma: CategoryUpsertClient) {
+export async function seedCategories(
+  prisma: CategoryUpsertClient,
+  options: { preserveExisting?: boolean } = {},
+) {
+  const updateExisting = options.preserveExisting !== true;
   for (const [parentIndex, parent] of CATEGORY_SEED_DATA.entries()) {
     const seededParent = await prisma.category.upsert({
       where: { slug: parent.slug },
-      update: {
-        parentId: null,
-        nameEn: parent.nameEn,
-        nameAm: parent.nameAm,
-        sortOrder: parentIndex,
-      },
+      update: updateExisting
+        ? {
+            parentId: null,
+            nameEn: parent.nameEn,
+            nameAm: parent.nameAm,
+            sortOrder: parentIndex,
+          }
+        : {},
       create: {
         slug: parent.slug,
         parentId: null,
@@ -149,12 +157,14 @@ export async function seedCategories(prisma: CategoryUpsertClient) {
     for (const [childIndex, child] of parent.children.entries()) {
       await prisma.category.upsert({
         where: { slug: child.slug },
-        update: {
-          parentId: seededParent.id,
-          nameEn: child.nameEn,
-          nameAm: child.nameAm,
-          sortOrder: childIndex,
-        },
+        update: updateExisting
+          ? {
+              parentId: seededParent.id,
+              nameEn: child.nameEn,
+              nameAm: child.nameAm,
+              sortOrder: childIndex,
+            }
+          : {},
         create: {
           slug: child.slug,
           parentId: seededParent.id,
