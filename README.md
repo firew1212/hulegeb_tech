@@ -29,7 +29,13 @@ NestJS backend for the Hulegeb marketplace.
 
 Copy `.env.example` to `.env` and set `JWT_ACCESS_SECRET` and
 `AUTH_CHALLENGE_SECRET` to independent random values of at least 32 characters.
-`AUTH_OTP_MAX_ATTEMPTS` defaults to five (valid range: 1–5). Passwords are
+`AUTH_OTP_MAX_ATTEMPTS` defaults to five (valid range: 1–5). `AUTH_LOGIN_MAX_FAILURES`
+defaults to five (valid range: 1–20) and `AUTH_LOGIN_FAILURE_WINDOW_MINUTES` defaults to
+15 (valid range: 1–1440). Account-aware login brute-force protection counts
+`LOGIN_FAILED` and `ADMIN_MFA_FAILED` audit events per user within the configured
+window and returns a generic HTTP 429 response before password or OTP verification.
+The check is not atomic; under concurrent requests more than the configured number
+of attempts may be processed (bounded concurrency race). Passwords are
 limited to 72 UTF-8 bytes to prevent bcrypt from silently truncating them.
 Set `AUTH_EMAIL_MODE=brevo` with `BREVO_API_KEY`, `AUTH_EMAIL_FROM`, and
 `FRONTEND_URL` for email delivery. Set `AUTH_SMS_MODE=webhook` with

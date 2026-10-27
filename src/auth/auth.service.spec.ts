@@ -6,8 +6,18 @@ import {
 import { createHmac } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { AuthChallengeType } from './auth.constants.js';
-import { AuthService } from './auth.service.js';
+import { AuthService, DUMMY_PASSWORD_HASH } from './auth.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+vi.mock('bcryptjs', async () => {
+  const actual = await vi.importActual<typeof import('bcryptjs')>('bcryptjs');
+  const compare = vi.fn(actual.compare);
+  return {
+    ...actual,
+    compare,
+    default: { ...actual, compare },
+  };
+});
+
 
 const CHALLENGE_SECRET = 'unit-test-challenge-secret-at-least-32-characters';
 
@@ -62,6 +72,7 @@ function createService(
     authAuditEvent: {
       create: vi.fn().mockResolvedValue({}),
       createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      count: vi.fn().mockResolvedValue(0),
       ...(prismaOverrides.authAuditEvent as object),
     },
     $transaction: transaction,
@@ -70,9 +81,19 @@ function createService(
   const config = {
     get: vi.fn((key: string) =>
       configOverrides[key] ??
-        (key === 'AUTH_OTP_MAX_ATTEMPTS'
+      (key === 'AUTH_OTP_MAX_ATTEMPTS'
+        ? '5'
+        : key === 'AUTH_LOGIN_MAX_FAILURES' ||
+            key === 'AUTH_LOGIN_MAX_ATTEMPTS' ||
+            key === 'AUTH_ACCOUNT_LOCKOUT_MAX_FAILURES'
           ? '5'
-          : 'https://frontend.example'),
+          : key === 'AUTH_LOGIN_FAILURE_WINDOW_MINUTES' ||
+              key === 'AUTH_LOGIN_LOCKOUT_MINUTES' ||
+              key === 'AUTH_ACCOUNT_LOCKOUT_MINUTES'
+            ? '15'
+            : key === 'FRONTEND_URL'
+              ? 'https://frontend.example'
+              : undefined),
     ),
     getOrThrow: vi.fn(() => CHALLENGE_SECRET),
   };
@@ -529,5 +550,216 @@ describe('AuthService', () => {
     );
 
     await expect(loadService.loadAuthenticatedUser('user-1', 'missing-session')).resolves.toBeUndefined();
+  });
+
+  it('returns 429 after five account-level login failures', async () => {
+    const passwordHash = await bcrypt.hash('correct-password', 4);
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: '+251911234567',
+      passwordHash,
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const findFirst = vi.fn().mockResolvedValue(user);
+    const { service } = createService({
+      user: { findFirst },
+      authAuditEvent: {
+        count: vi.fn().mockResolvedValue(5),
+        create: vi.fn().mockResolvedValue({}),
+      },
+    });
+
+    await expect(
+      service.login('buyer@example.com', 'any-password'),
+    ).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('validates login brute-force settings', () => {
+    expect(() =>
+      createService({}, { AUTH_LOGIN_MAX_FAILURES: '0' }),
+    ).toThrow('AUTH_LOGIN_MAX_FAILURES must be an integer from 1 to 20.');
+  });
+  it('records the first five sequential qualifying login failures as 401', async () => {
+    const passwordHash = await bcrypt.hash('correct-password', 4);
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: '+251911234567',
+      passwordHash,
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const findFirst = vi.fn().mockResolvedValue(user);
+    let failures = 0;
+    const count = vi.fn().mockImplementation(() => Promise.resolve(failures++));
+    const create = vi.fn().mockResolvedValue({});
+    const { service, prisma } = createService({
+      user: { findFirst },
+      authAuditEvent: { count, create },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        service.login('buyer@example.com', 'wrong-password'),
+      ).rejects.toMatchObject({ status: 401 });
+    }
+
+    expect(count).toHaveBeenCalledTimes(5);
+    expect(prisma.authAuditEvent.create).toHaveBeenCalledTimes(5);
+  });
+
+  it('returns 429 on the sixth sequential attempt without invoking bcrypt', async () => {
+    const passwordHash = await bcrypt.hash('correct-password', 4);
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: '+251911234567',
+      passwordHash,
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const findFirst = vi.fn().mockResolvedValue(user);
+    const count = vi.fn().mockResolvedValue(5);
+    const { service } = createService({
+      user: { findFirst },
+      authAuditEvent: { count, create: vi.fn().mockResolvedValue({}) },
+    });
+
+    await expect(
+      service.login('buyer@example.com', 'wrong-password'),
+    ).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('performs dummy bcrypt comparison for unknown users and returns generic auth response', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const { service } = createService({
+      user: { findFirst },
+      authAuditEvent: { count: vi.fn().mockResolvedValue(0), create: vi.fn().mockResolvedValue({}) },
+    });
+
+    (bcrypt.compare as unknown as { mockClear?: () => void }).mockClear?.();
+    await expect(
+      service.login('nobody@example.com', 'wrong-password'),
+    ).rejects.toMatchObject({ status: 401, message: 'Invalid credentials.' });
+
+    expect(bcrypt.compare).toHaveBeenCalledWith('wrong-password', DUMMY_PASSWORD_HASH);
+  });
+
+  it('does not lock out when fewer than five qualifying failures remain in window', async () => {
+    const passwordHash = await bcrypt.hash('correct-password', 4);
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: '+251911234567',
+      passwordHash,
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const findFirst = vi.fn().mockResolvedValue(user);
+    const count = vi.fn().mockResolvedValue(1);
+    const create = vi.fn().mockResolvedValue({});
+    const { service } = createService({
+      user: { findFirst },
+      authAuditEvent: { count, create },
+    });
+
+    await expect(
+      service.login('buyer@example.com', 'wrong-password'),
+    ).rejects.toMatchObject({ status: 401 });
+
+    expect(create).toHaveBeenCalled();
+  });
+
+  it('returns 429 for restricted admin MFA before OTP verification', async () => {
+    const user = {
+      id: 'user-1',
+      email: 'admin@example.com',
+      phone: '+251911234567',
+      passwordHash: 'hash',
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'ADMIN' } }],
+      sellerProfile: null,
+    };
+    const findUnique = vi.fn().mockResolvedValue(user);
+    const count = vi.fn().mockResolvedValue(5);
+    const findFirstChallenge = vi.fn();
+    const { service } = createService({
+      user: { findUnique, findFirst: vi.fn().mockResolvedValue(user) },
+      authChallenge: { findFirst: findFirstChallenge, count: vi.fn().mockResolvedValue(0) },
+      authAuditEvent: { count, create: vi.fn().mockResolvedValue({}) },
+    });
+
+    await expect(
+      service.verifyAdminMfa('+251911234567', '123456'),
+    ).rejects.toMatchObject({ status: 429 });
+
+    expect(findFirstChallenge).not.toHaveBeenCalled();
+  });
+
+  it('validates invalid failure-window configuration and supported env aliases', () => {
+    expect(() =>
+      createService({}, { AUTH_LOGIN_FAILURE_WINDOW_MINUTES: '0' }),
+    ).toThrow('AUTH_LOGIN_FAILURE_WINDOW_MINUTES must be an integer from 1 to 1440.');
+
+    expect(() =>
+      createService(
+        {},
+        {
+          AUTH_LOGIN_MAX_ATTEMPTS: '3',
+          AUTH_ACCOUNT_LOCKOUT_MINUTES: '10',
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  it('handles concurrent login attempts without crashing', async () => {
+    const passwordHash = await bcrypt.hash('correct-password', 4);
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: '+251911234567',
+      passwordHash,
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const findFirst = vi.fn().mockResolvedValue(user);
+    const count = vi.fn().mockResolvedValue(0);
+    const create = vi.fn().mockResolvedValue({});
+    const { service } = createService({
+      user: { findFirst },
+      authAuditEvent: { count, create },
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () =>
+        service.login('buyer@example.com', 'wrong-password'),
+      ),
+    );
+
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') {
+        expect((result.reason as { status?: number }).status).toBe(401);
+      }
+    }
   });
 });

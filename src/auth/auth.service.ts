@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -32,6 +33,9 @@ import {
   RoleCode,
 } from '../authorization/authorization.constants.js';
 
+export const DUMMY_PASSWORD_HASH =
+  '$2b$12$4FIQ4hGGuBMG0SSap5M34umEXBLgaucKZSyAR2xEZcSAfiloHZIYG';
+
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 const EMAIL_CHALLENGE_TTL_MS = 24 * 60 * 60 * 1000;
 const OTP_TTL_MS = 5 * 60 * 1000;
@@ -54,6 +58,8 @@ export class AuthService {
   private readonly frontendUrl: string;
   private readonly challengeSecret: string;
   private readonly maxOtpAttempts: number;
+  private readonly maxLoginFailures: number;
+  private readonly loginFailureWindowMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -78,6 +84,41 @@ export class AuthService {
     ) {
       throw new Error('AUTH_OTP_MAX_ATTEMPTS must be an integer from 1 to 5.');
     }
+
+    const maxLoginFailuresRaw = this.firstConfigValue([
+      'AUTH_LOGIN_MAX_FAILURES',
+      'AUTH_LOGIN_MAX_ATTEMPTS',
+      'AUTH_ACCOUNT_LOCKOUT_MAX_FAILURES',
+    ]);
+    this.maxLoginFailures =
+      maxLoginFailuresRaw === undefined ? 5 : Number(maxLoginFailuresRaw);
+    if (
+      !Number.isInteger(this.maxLoginFailures) ||
+      this.maxLoginFailures < 1 ||
+      this.maxLoginFailures > 20
+    ) {
+      throw new Error(
+        'AUTH_LOGIN_MAX_FAILURES must be an integer from 1 to 20.',
+      );
+    }
+
+    const loginWindowRaw = this.firstConfigValue([
+      'AUTH_LOGIN_FAILURE_WINDOW_MINUTES',
+      'AUTH_LOGIN_LOCKOUT_MINUTES',
+      'AUTH_ACCOUNT_LOCKOUT_MINUTES',
+    ]);
+    const loginWindowMinutes =
+      loginWindowRaw === undefined ? 15 : Number(loginWindowRaw);
+    if (
+      !Number.isInteger(loginWindowMinutes) ||
+      loginWindowMinutes < 1 ||
+      loginWindowMinutes > 1440
+    ) {
+      throw new Error(
+        'AUTH_LOGIN_FAILURE_WINDOW_MINUTES must be an integer from 1 to 1440.',
+      );
+    }
+    this.loginFailureWindowMs = loginWindowMinutes * 60 * 1000;
   }
 
   async register(input: RegisterDto): Promise<{ message: string }> {
@@ -186,7 +227,25 @@ export class AuthService {
       },
     });
 
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    if (user) {
+      const recentFailures = await this.prisma.authAuditEvent.count({
+        where: {
+          userId: user.id,
+          eventType: 'LOGIN_FAILED',
+          createdAt: { gt: new Date(Date.now() - this.loginFailureWindowMs) },
+        },
+      });
+      if (recentFailures >= this.maxLoginFailures) {
+        throw new HttpException(
+          'Too many login attempts. Try again later.',
+          429,
+        );
+      }
+    }
+
+    const passwordHash = user ? user.passwordHash : DUMMY_PASSWORD_HASH;
+    const passwordValid = await bcrypt.compare(password, passwordHash);
+    if (!user || !passwordValid) {
       await this.recordAudit(user?.id, 'LOGIN_FAILED');
       throw new UnauthorizedException('Invalid credentials.');
     }
@@ -402,6 +461,20 @@ export class AuthService {
       !user.phoneVerifiedAt
     ) {
       throw new UnauthorizedException('Administrator verification failed.');
+    }
+
+    const recentMfaFailures = await this.prisma.authAuditEvent.count({
+      where: {
+        userId: user.id,
+        eventType: 'ADMIN_MFA_FAILED',
+        createdAt: { gt: new Date(Date.now() - this.loginFailureWindowMs) },
+      },
+    });
+    if (recentMfaFailures >= this.maxLoginFailures) {
+      throw new HttpException(
+        'Too many login attempts. Try again later.',
+        429,
+      );
     }
 
     const challenge = await this.prisma.authChallenge.findFirst({
@@ -742,6 +815,16 @@ export class AuthService {
     await this.prisma.authAuditEvent.create({
       data: userId ? { userId, eventType } : { eventType },
     });
+  }
+
+  private firstConfigValue(keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = this.config.get<string>(key);
+      if (value !== undefined && value !== null) {
+        return value;
+      }
+    }
+    return undefined;
   }
 
   private hashToken(token: string): string {
