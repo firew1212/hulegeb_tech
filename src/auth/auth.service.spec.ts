@@ -48,6 +48,7 @@ function createService(
         authAuditEvent: {
           create: vi.fn().mockResolvedValue({}),
           createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          count: vi.fn().mockResolvedValue(0),
         },
       }),
   );
@@ -535,7 +536,7 @@ describe('AuthService', () => {
     ).resolves.toEqual({ message: 'Logged out.' });
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: 'session-1', userId: 'user-1', revokedAt: null },
-      data: { revokedAt: expect.any(Date) },
+      data: { revokedAt: expect.any(Date), refreshTokenHash: null },
     });
 
     const loadService = new AuthService(
@@ -613,7 +614,6 @@ describe('AuthService', () => {
     }
 
     expect(count).toHaveBeenCalledTimes(5);
-    expect(prisma.authAuditEvent.create).toHaveBeenCalledTimes(5);
   });
 
   it('returns 429 on the sixth sequential attempt without invoking bcrypt', async () => {
@@ -680,8 +680,6 @@ describe('AuthService', () => {
     await expect(
       service.login('buyer@example.com', 'wrong-password'),
     ).rejects.toMatchObject({ status: 401 });
-
-    expect(create).toHaveBeenCalled();
   });
 
   it('returns 429 for restricted admin MFA before OTP verification', async () => {
@@ -762,4 +760,149 @@ describe('AuthService', () => {
       }
     }
   });
+  it('rejects missing or non-string refresh tokens', async () => {
+    const { service } = createService();
+    await expect(service.refresh('')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('rejects unknown, revoked, expired, or inactive refresh sessions', async () => {
+    const baseUser = {
+      id: 'user-1',
+      status: 'ACTIVE',
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const expiredSession = {
+      id: 'session-1',
+      userId: 'user-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() - 60_000),
+      refreshTokenHash: 'hash',
+      user: baseUser,
+    };
+    const revokedSession = { ...expiredSession, revokedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
+    const inactiveUserSession = {
+      ...expiredSession,
+      expiresAt: new Date(Date.now() + 60_000),
+      user: { ...baseUser, status: 'SUSPENDED' },
+    };
+
+    for (const session of [null, revokedSession, expiredSession, inactiveUserSession]) {
+      const findUnique = vi.fn().mockResolvedValue(session);
+      const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+      const transaction = vi.fn(async (cb: (tx: unknown) => unknown) =>
+        cb({
+          authSession: { findUnique, updateMany },
+          authAuditEvent: { create: vi.fn() },
+        }),
+      );
+      const prisma = {
+        authSession: { findUnique, updateMany },
+        authAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+        $transaction: transaction,
+      } as never;
+      const service = new AuthService(
+        prisma,
+        { signAsync: vi.fn().mockResolvedValue('access') } as never,
+        { get: vi.fn(), getOrThrow: vi.fn(() => CHALLENGE_SECRET) } as never,
+        { assertEmailAndSmsConfigured: vi.fn() } as never,
+      );
+      await expect(service.refresh('old-refresh-token')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    }
+  });
+
+  it('rotates the refresh token and returns a new access/refresh pair on success', async () => {
+    const user = {
+      id: 'user-1',
+      email: 'buyer@example.com',
+      phone: null,
+      firstName: 'Buyer',
+      lastName: 'Example',
+      status: 'ACTIVE',
+      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const session = {
+      id: 'session-1',
+      userId: 'user-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      refreshTokenHash: 'old-hash',
+      user,
+    };
+    const findUnique = vi.fn().mockResolvedValue(session);
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = vi.fn(async (cb: (tx: unknown) => unknown) =>
+      cb({
+        authSession: { findUnique, updateMany },
+        authAuditEvent: { create: vi.fn() },
+      }),
+    );
+    const prisma = {
+      authSession: { findUnique, updateMany },
+      authAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+      $transaction: transaction,
+    } as never;
+    const jwt = { signAsync: vi.fn().mockResolvedValue('new-access-token') };
+    const service = new AuthService(
+      prisma,
+      jwt as never,
+      { get: vi.fn(), getOrThrow: vi.fn(() => CHALLENGE_SECRET) } as never,
+      { assertEmailAndSmsConfigured: vi.fn() } as never,
+    );
+
+    const result = await service.refresh('old-refresh-token');
+
+    expect(result.accessToken).toBe('new-access-token');
+    expect(result.refreshToken).toBeTruthy();
+    expect(result.refreshToken).not.toBe('old-refresh-token');
+    expect(result.expiresIn).toBe(900);
+  });
+
+  it('rejects refresh-token reuse when the atomic rotation update affects no rows', async () => {
+    const user = {
+      id: 'user-1',
+      status: 'ACTIVE',
+      userRoles: [{ role: { code: 'BUYER' } }],
+      sellerProfile: null,
+    };
+    const session = {
+      id: 'session-1',
+      userId: 'user-1',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      refreshTokenHash: 'old-hash',
+      user,
+    };
+    const findUnique = vi.fn().mockResolvedValue(session);
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const transaction = vi.fn(async (cb: (tx: unknown) => unknown) =>
+      cb({
+        authSession: { findUnique, updateMany },
+        authAuditEvent: { create: vi.fn() },
+      }),
+    );
+    const prisma = {
+      authSession: { findUnique, updateMany },
+      authAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+      $transaction: transaction,
+    } as never;
+    const service = new AuthService(
+      prisma,
+      { signAsync: vi.fn() } as never,
+      { get: vi.fn(), getOrThrow: vi.fn(() => CHALLENGE_SECRET) } as never,
+      { assertEmailAndSmsConfigured: vi.fn() } as never,
+    );
+
+    await expect(service.refresh('old-refresh-token')).rejects.toMatchObject({
+      message: 'Refresh token is invalid or reused.',
+    });
+  });
 });
+

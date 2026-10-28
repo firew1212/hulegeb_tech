@@ -95,8 +95,14 @@ export class ResetPasswordDto {
   newPassword!: string;
 }
 
-export class UpdateProfileDto {
+export class RefreshTokenDto {
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(256)
+  refreshToken!: string;
+}
+
+export class UpdateProfileDto {
   @IsNotEmpty()
   @Matches(/\S/)
   @MaxLength(80)

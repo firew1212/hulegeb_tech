@@ -159,6 +159,19 @@ function validateProductionEnvironment(
     );
   }
 
+  const corsOriginsRaw =
+    config.CORS_ALLOWED_ORIGINS ??
+    config.CORS_ORIGINS ??
+    config.ALLOWED_ORIGINS;
+  if (corsOriginsRaw !== undefined && String(corsOriginsRaw).trim() !== '') {
+    for (const origin of String(corsOriginsRaw).split(',').map((value) => value.trim()).filter(Boolean)) {
+      const corsUrl = parseUrl(origin, 'CORS_ALLOWED_ORIGINS');
+      if (corsUrl.protocol !== 'https:' || corsUrl.username || corsUrl.password) {
+        throw new Error('CORS_ALLOWED_ORIGINS must use HTTPS and must not include credentials.');
+      }
+    }
+  }
+
   if (config.PORT !== undefined) {
     const port = Number(config.PORT);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -197,6 +210,30 @@ export function hasObserveOptions(
       environment.OBSERVE_APP_SECRET?.trim() &&
       environment.OBSERVE_SERVICE_ID?.trim(),
   );
+}
+
+function parseCorsOrigins(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  return value.split(',').map((o) => o.trim()).filter((o) => o.length > 0);
+}
+
+export function getAllowedCorsOrigins(environment: NodeJS.ProcessEnv = process.env) {
+  const configured = parseCorsOrigins(
+    environment && (environment.CORS_ALLOWED_ORIGINS || environment.CORS_ORIGINS || environment.ALLOWED_ORIGINS)
+  );
+  if (configured.length > 0) return configured;
+  const frontendUrl = environment && environment.FRONTEND_URL ? environment.FRONTEND_URL.trim() : '';
+  return frontendUrl ? [frontendUrl] : [];
+}
+
+export const getCorsAllowedOrigins = getAllowedCorsOrigins;
+export const getCorsOrigins = getAllowedCorsOrigins;
+export const getAllowedOrigins = getAllowedCorsOrigins;
+
+export function isAllowedCorsOrigin(origin: string | undefined, environment: NodeJS.ProcessEnv = process.env) {
+  if (!origin) return false;
+  const normalizedOrigin = origin.trim().replace(/\/$/, '');
+  return getAllowedCorsOrigins(environment).some((allowed) => allowed.trim().replace(/\/$/, '') === normalizedOrigin);
 }
 
 export function validateEnvironment(

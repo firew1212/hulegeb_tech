@@ -37,6 +37,8 @@ export const DUMMY_PASSWORD_HASH =
   '$2b$12$4FIQ4hGGuBMG0SSap5M34umEXBLgaucKZSyAR2xEZcSAfiloHZIYG';
 
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const REFRESH_TOKEN_BYTES = 48;
 const EMAIL_CHALLENGE_TTL_MS = 24 * 60 * 60 * 1000;
 const OTP_TTL_MS = 5 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
@@ -246,7 +248,7 @@ export class AuthService {
     const passwordHash = user ? user.passwordHash : DUMMY_PASSWORD_HASH;
     const passwordValid = await bcrypt.compare(password, passwordHash);
     if (!user || !passwordValid) {
-      await this.recordAudit(user?.id, 'LOGIN_FAILED');
+      await this.recordLoginFailure(user?.id);
       throw new UnauthorizedException('Invalid credentials.');
     }
 
@@ -508,7 +510,7 @@ export class AuthService {
         },
         data: { attempts: { increment: 1 } },
       });
-      await this.recordAudit(user.id, 'ADMIN_MFA_FAILED');
+      await this.recordLoginFailure(user.id, 'ADMIN_MFA_FAILED');
       throw new UnauthorizedException('Administrator verification failed.');
     }
 
@@ -719,7 +721,7 @@ export class AuthService {
       });
       await tx.authSession.updateMany({
         where: { userId: challenge.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
+        data: { revokedAt: new Date(), refreshTokenHash: null },
       });
       await tx.authChallenge.updateMany({
         where: {
@@ -740,13 +742,82 @@ export class AuthService {
     return { message: 'Password reset. Sign in using the new password.' };
   }
 
+  async refresh(refreshToken: string) {
+    if (!refreshToken || typeof refreshToken !== 'string') {
+      throw new UnauthorizedException('Refresh token is invalid.');
+    }
+
+    const oldHash = this.hashToken(refreshToken);
+    const newRefreshToken = randomBytes(REFRESH_TOKEN_BYTES).toString('base64url');
+    const newRefreshTokenHash = this.hashToken(newRefreshToken);
+    const newExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
+    const now = new Date();
+
+    const session = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.authSession.findUnique({
+        where: { refreshTokenHash: oldHash },
+        include: {
+          user: {
+            include: {
+              userRoles: { include: { role: { select: { code: true } } } },
+              sellerProfile: { select: { status: true } },
+            },
+          },
+        },
+      });
+
+      if (
+        !existing ||
+        existing.revokedAt ||
+        existing.expiresAt <= now ||
+        existing.user.status !== AccountStatus.ACTIVE
+      ) {
+        throw new UnauthorizedException('Refresh token is invalid or expired.');
+      }
+
+      const rotated = await tx.authSession.updateMany({
+        where: {
+          id: existing.id,
+          refreshTokenHash: oldHash,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: {
+          refreshTokenHash: newRefreshTokenHash,
+          expiresAt: newExpiresAt,
+        },
+      });
+
+      if (rotated.count !== 1) {
+        throw new UnauthorizedException('Refresh token is invalid or reused.');
+      }
+
+      return existing;
+    });
+
+    const accessToken = await this.jwt.signAsync({
+      sub: session.userId,
+      sid: session.id,
+    });
+
+    await this.recordAudit(session.userId, 'TOKEN_REFRESHED');
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+      tokenType: 'Bearer',
+      expiresIn: ACCESS_TOKEN_TTL_MS / 1000,
+      user: this.toPublicUser(session.user),
+    };
+  }
+
   async logout(user: RequestUser): Promise<{ message: string }> {
     if (!user.sessionId) {
       throw new UnauthorizedException('Session is invalid.');
     }
     await this.prisma.authSession.updateMany({
       where: { id: user.sessionId, userId: user.id, revokedAt: null },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: new Date(), refreshTokenHash: null },
     });
     await this.recordAudit(user.id, 'LOGOUT_SUCCEEDED');
     return { message: 'Logged out.' };
@@ -817,6 +888,52 @@ export class AuthService {
     });
   }
 
+  private async recordLoginFailure(
+    userId: string | undefined,
+    eventType = 'LOGIN_FAILED',
+  ): Promise<void> {
+    if (!userId) {
+      await this.recordAudit(undefined, eventType);
+      return;
+    }
+
+    const windowStart = new Date(Date.now() - this.loginFailureWindowMs);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.prisma.$transaction(
+          async (tx) => {
+            const recentFailures = await tx.authAuditEvent.count({
+              where: {
+                userId,
+                eventType,
+                createdAt: { gt: windowStart },
+              },
+            });
+            if (recentFailures >= this.maxLoginFailures) {
+              throw new HttpException(
+                'Too many login attempts. Try again later.',
+                429,
+              );
+            }
+            await tx.authAuditEvent.create({
+              data: { userId, eventType },
+            });
+          },
+          { isolationLevel: 'Serializable' },
+        );
+        return;
+      } catch (error) {
+        const isSerializationFailure =
+          error instanceof Error &&
+          ('code' in error &&
+            (error as { code?: string }).code === 'P2034');
+        if (!isSerializationFailure || attempt === 2) {
+          throw error;
+        }
+      }
+    }
+  }
+
   private firstConfigValue(keys: string[]): string | undefined {
     for (const key of keys) {
       const value = this.config.get<string>(key);
@@ -864,9 +981,11 @@ export class AuthService {
   }
 
   private async createSession(user: AuthenticatedUser) {
-    const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_MS);
+    const refreshToken = randomBytes(REFRESH_TOKEN_BYTES).toString('base64url');
+    const refreshTokenHash = this.hashToken(refreshToken);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
     const session = await this.prisma.authSession.create({
-      data: { userId: user.id, expiresAt },
+      data: { userId: user.id, expiresAt, refreshTokenHash },
       select: { id: true },
     });
 
@@ -879,6 +998,7 @@ export class AuthService {
 
     return {
       accessToken,
+      refreshToken,
       tokenType: 'Bearer',
       expiresIn: ACCESS_TOKEN_TTL_MS / 1000,
       user: this.toPublicUser(user),

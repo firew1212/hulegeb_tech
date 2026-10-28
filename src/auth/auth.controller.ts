@@ -7,6 +7,7 @@ import {
   ForgotPasswordDto,
   LoginDto,
   RegisterDto,
+  RefreshTokenDto,
   ResendPhoneVerificationDto,
   ResetPasswordDto,
   UpdateProfileDto,
@@ -33,6 +34,12 @@ export class AuthController {
     return this.authService.login(input.identifier, input.password);
   }
 
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('refresh')
+  refresh(@Body() input: RefreshTokenDto) {
+    return this.authService.refresh(input.refreshToken);
+  }
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('login/verify-admin-mfa')
