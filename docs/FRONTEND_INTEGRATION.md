@@ -220,5 +220,13 @@ Required env names (no values): NODE_ENV, DATABASE_URL, JWT_ACCESS_SECRET, AUTH_
 - Loading/empty/offline/unauthorized states.
 
 ## J. API coverage and limitations
+## K. Swagger / OpenAPI
+
+- Swagger UI: `http://localhost:3000/api/docs` (or `${PORT}`).
+- OpenAPI JSON: `http://localhost:3000/api/docs-json`.
+- Enabled by default when `NODE_ENV !== production`; set `SWAGGER_ENABLED=true|false` to override. In production it is disabled by default; both UI and JSON endpoints return 404 when disabled.
+- Authenticate in Swagger UI via the Authorize button using `Bearer <accessToken>`.
+- Route paths, guards, throttling, CORS, Helmet, and validation are unchanged. Business endpoints remain protected.
+
 
 Implemented and tested: auth, catalog, sellers, cart, orders, notifications (unit + E2E where present). NOT VERIFIED: exact deposit rounding formula, some DTO field-level rules beyond controller visibility, production delivery integrations (brevo/webhook) are config-dependent. Known limitations: refresh tokens returned in JSON (not cookies), CORS/Helmet partially configured, DELIVERY_STAFF unused, brute-force protection not fully atomic, legacy CONFIRMED displayed as PENDING.

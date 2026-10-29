@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import {
   BadRequestException,
   Body,
@@ -23,6 +24,8 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 @RequireRoles(RoleCode.BUYER)
+@ApiTags('Cart')
+@ApiBearerAuth('bearer')
 @Controller('cart')
 export class CartController {
   constructor(private readonly cart: CartService) {}
@@ -54,6 +57,12 @@ export class CartController {
     return this.cart.removeItem(user.id, variantId);
   }
 
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    description:
+      'Unique idempotency key, 1-255 letters, digits, dots, underscores, colons, or hyphens.',
+  })
   @Post('checkout')
   checkout(
     @CurrentUser() user: RequestUser,

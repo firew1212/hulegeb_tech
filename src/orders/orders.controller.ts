@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import {
   BadRequestException,
   Body,
@@ -29,6 +30,8 @@ import { OrdersService } from './orders.service.js';
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
+@ApiTags('Orders')
+@ApiBearerAuth('bearer')
 @Controller('orders')
 export class OrdersController {
   constructor(
@@ -111,6 +114,12 @@ export class OrdersController {
   }
 
   @RequireRoles(RoleCode.BUYER)
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    description:
+      'Unique idempotency key, 1-255 letters, digits, dots, underscores, colons, or hyphens.',
+  })
   @Post()
   createOrder(
     @CurrentUser() user: RequestUser,

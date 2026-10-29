@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -28,23 +29,28 @@ import {
 } from './catalog.dto.js';
 import { CatalogService } from './catalog.service.js';
 
+@ApiTags('Catalog')
+@ApiBearerAuth('bearer')
 @Controller('catalog')
 export class CatalogController {
   constructor(private readonly catalog: CatalogService) {}
 
   @Public()
+  @ApiOperation({ security: [] })
   @Get('categories')
   listActiveCategories() {
     return this.catalog.listActiveCategories();
   }
 
   @Public()
+  @ApiOperation({ security: [] })
   @Get('products')
   listPublicProducts(@Query() pagination: PublicProductPaginationDto) {
     return this.catalog.listPublicProducts(pagination);
   }
 
   @Public()
+  @ApiOperation({ security: [] })
   @Get('products/:productId')
   getPublicProduct(@Param('productId', new ParseUUIDPipe()) productId: string) {
     return this.catalog.getPublicProduct(productId);

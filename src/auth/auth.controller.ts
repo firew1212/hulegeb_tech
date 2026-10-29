@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../authorization/current-user.decorator.js';
@@ -16,6 +17,7 @@ import {
 } from './auth.dto.js';
 import { AuthService } from './auth.service.js';
 
+@ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -89,11 +91,13 @@ export class AuthController {
     return this.authService.resetPassword(input);
   }
 
+  @ApiBearerAuth('bearer')
   @Get('me')
   getProfile(@CurrentUser() user: RequestUser) {
     return this.authService.getProfile(user.id);
   }
 
+  @ApiBearerAuth('bearer')
   @Patch('me')
   updateProfile(
     @CurrentUser() user: RequestUser,
@@ -102,6 +106,7 @@ export class AuthController {
     return this.authService.updateProfile(user.id, input);
   }
 
+  @ApiBearerAuth('bearer')
   @Post('logout')
   logout(@CurrentUser() user: RequestUser) {
     return this.authService.logout(user);

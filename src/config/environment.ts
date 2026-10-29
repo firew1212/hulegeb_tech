@@ -270,3 +270,12 @@ export function validateEnvironment(
 
   return config;
 }
+export function isSwaggerEnabled(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = environment.SWAGGER_ENABLED?.trim().toLowerCase();
+  if (raw === 'true' || raw === '1') return true;
+  if (raw === 'false' || raw === '0') return false;
+  return environment.NODE_ENV !== 'production';
+}
+

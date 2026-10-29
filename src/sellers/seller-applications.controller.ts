@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -15,6 +16,8 @@ import {
 import { SellerApplicationDto } from './seller-application.dto.js';
 import { SellerApplicationsService } from './seller-applications.service.js';
 
+@ApiTags('Sellers')
+@ApiBearerAuth('bearer')
 @Controller('sellers/applications')
 export class SellerApplicationsController {
   constructor(
